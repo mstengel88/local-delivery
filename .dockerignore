@@ -1,3 +1,14 @@
-.cache
-build
 node_modules
+.git
+dist
+build
+.cache
+.react-router
+.vite
+coverage
+.env
+.env.*
+*.log
+.DS_Store
+extensions/**/dist
+extensions/**/build
