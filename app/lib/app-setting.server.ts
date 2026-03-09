@@ -15,6 +15,7 @@ export async function getAppSettings(shop: string) {
       enableCalculatedRates: true,
       enableRemoteSurcharge: true,
       enableDebugLogging: false,
+      showVendorSource: true,
     },
   });
 }
@@ -27,6 +28,7 @@ export async function saveAppSettings(
     enableCalculatedRates: boolean;
     enableRemoteSurcharge: boolean;
     enableDebugLogging: boolean;
+    showVendorSource: boolean;
   },
 ) {
   return prisma.appSettings.upsert({
