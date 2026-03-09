@@ -1,4 +1,4 @@
-import prisma from "../db.server";
+import { supabaseAdmin } from "./supabase.server";
 import { getAppSettings } from "./app-settings.server";
 
 const MAX_QTY_PER_TRUCK = 22;
@@ -18,7 +18,6 @@ export type QuoteInput = {
     grams?: number;
     price?: number;
     requiresShipping?: boolean;
-    variantId?: number | string;
     productVendor?: string;
   }>;
 };
@@ -33,10 +32,12 @@ export type QuoteResult = {
 };
 
 async function getActiveOriginAddress(): Promise<{ label: string; address: string }> {
-  const data = await prisma.originAddress.findFirst({
-    where: { isActive: true },
-    select: { label: true, address: true },
-  });
+  const { data } = await supabaseAdmin
+    .from("origin_addresses")
+    .select("label, address")
+    .eq("is_active", true)
+    .limit(1)
+    .single();
 
   return (
     data || {
@@ -49,15 +50,12 @@ async function getActiveOriginAddress(): Promise<{ label: string; address: strin
 async function getOriginFromVendor(vendor?: string | null): Promise<{ label: string; address: string } | null> {
   if (!vendor) return null;
 
-  const data = await prisma.originAddress.findFirst({
-    where: {
-      label: {
-        equals: vendor,
-        mode: "insensitive",
-      },
-    },
-    select: { label: true, address: true },
-  });
+  const { data } = await supabaseAdmin
+    .from("origin_addresses")
+    .select("label, address")
+    .ilike("label", vendor)
+    .limit(1)
+    .single();
 
   return data || null;
 }
@@ -151,6 +149,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   }
 
   const googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY;
+
   if (!googleMapsApiKey) {
     return {
       serviceName: "Custom Delivery",
@@ -226,9 +225,11 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
     if (fallback) {
       let fallbackDollars = fallback.costDollars;
+
       if (settings.enableRemoteSurcharge && input.postalCode.startsWith("9")) {
         fallbackDollars += 3;
       }
+
       totalDeliveryCostCents = Math.round(fallbackDollars * 100);
       totalTrucks = 1;
     }
