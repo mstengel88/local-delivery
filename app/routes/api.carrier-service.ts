@@ -1,18 +1,14 @@
 import type { ActionFunctionArgs } from "react-router";
 import { json } from "react-router";
-import { authenticate } from "../shopify.server";
 import { getQuote } from "../lib/quote-engine.server";
 
 export async function action({ request }: ActionFunctionArgs) {
-  const { session } = await authenticate.public.appProxy(request).catch(() => ({ session: null as any }));
-
   const body = await request.json();
   const rate = body?.rate ?? {};
   const destination = rate.destination ?? {};
   const items = Array.isArray(rate.items) ? rate.items : [];
 
   const shop =
-    session?.shop ||
     body?.shop ||
     request.headers.get("x-shopify-shop-domain") ||
     process.env.SHOPIFY_STORE_DOMAIN ||
@@ -24,15 +20,14 @@ export async function action({ request }: ActionFunctionArgs) {
     country: destination.country ?? "US",
     province: destination.province ?? "",
     city: destination.city ?? "",
-    address1: destination.address1 ?? destination.address1,
-    address2: destination.address2 ?? destination.address2,
+    address1: destination.address1 ?? "",
+    address2: destination.address2 ?? "",
     items: items.map((item: any) => ({
       sku: item.sku,
       quantity: item.quantity ?? 0,
       grams: item.grams ?? 0,
       price: item.price ?? 0,
       requiresShipping: item.requires_shipping !== false,
-      variantId: item.variant_id,
       productVendor: item.vendor || item.product_vendor || "",
     })),
   });
