@@ -28,6 +28,7 @@ export async function action({ request }: ActionFunctionArgs) {
     enableCalculatedRates: form.get("enableCalculatedRates") === "on",
     enableRemoteSurcharge: form.get("enableRemoteSurcharge") === "on",
     enableDebugLogging: form.get("enableDebugLogging") === "on",
+    showVendorSource: form.get("showVendorSource") === "on",
   });
 
   return redirect("/app");
@@ -91,6 +92,15 @@ export default function AppIndex() {
               defaultChecked={settings.enableDebugLogging}
             />{" "}
             Enable debug logging
+          </label>
+
+          <label>
+            <input
+              type="checkbox"
+              name="showVendorSource"
+              defaultChecked={settings.showVendorSource}
+            />{" "}
+            Show vendor source pulled from product
           </label>
 
           <button
