@@ -5,6 +5,7 @@ import {
   type LoaderFunctionArgs,
   type ActionFunctionArgs,
 } from "react-router";
+
 import { authenticate } from "../shopify.server";
 import { registerCarrierService } from "../lib/register-carrier.server";
 import { getAppSettings, saveAppSettings } from "../lib/app-settings.server";
@@ -12,14 +13,18 @@ import { getAppSettings, saveAppSettings } from "../lib/app-settings.server";
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
 
-  await registerCarrierService(admin);
+  // Ensure carrier service exists
+  const carrierResult = await registerCarrierService(admin);
+
+  // Load admin settings
   const settings = await getAppSettings(session.shop);
-  await registerCarrierService(admin);
-  return data({ settings });
+
+  return data({ settings, carrierResult });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
   const { session } = await authenticate.admin(request);
+
   const form = await request.formData();
 
   await saveAppSettings(session.shop, {
@@ -35,7 +40,7 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function AppIndex() {
-  const { settings } = useLoaderData() as any;
+  const { settings, carrierResult } = useLoaderData() as any;
 
   return (
     <div style={{ padding: 30, maxWidth: 800 }}>
@@ -43,6 +48,30 @@ export default function AppIndex() {
       <p style={{ marginBottom: 24 }}>
         Manage shipping behavior for testing and live checkout.
       </p>
+
+      {/* Carrier status panel */}
+      <div
+        style={{
+          marginBottom: 30,
+          padding: 14,
+          borderRadius: 8,
+          border: "1px solid #ddd",
+          background: carrierResult?.ok ? "#f6fff6" : "#fff6f6",
+        }}
+      >
+        <div>
+          <strong>Carrier status:</strong>{" "}
+          {carrierResult?.ok ? "OK" : "Error"}
+        </div>
+
+        <div>
+          <strong>Step:</strong> {carrierResult?.step}
+        </div>
+
+        <div>
+          <strong>Message:</strong> {carrierResult?.message}
+        </div>
+      </div>
 
       <Form method="post">
         <div style={{ display: "grid", gap: 18 }}>
@@ -61,7 +90,7 @@ export default function AppIndex() {
               name="useTestFlatRate"
               defaultChecked={settings.useTestFlatRate}
             />{" "}
-            Use test flat rate
+            Use test flat rate (for checkout testing)
           </label>
 
           <label>
