@@ -39,4 +39,5 @@ model AppSettings {
   enableCalculatedRates   Boolean @default(true)
   enableRemoteSurcharge   Boolean @default(true)
   enableDebugLogging      Boolean @default(false)
+  showVendorSource        Boolean @default(true)
 }
