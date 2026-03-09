@@ -32,3 +32,11 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+model AppSettings {
+  shop                    String  @id
+  useTestFlatRate         Boolean @default(false)
+  testFlatRateCents       Int     @default(5000)
+  enableCalculatedRates   Boolean @default(true)
+  enableRemoteSurcharge   Boolean @default(true)
+  enableDebugLogging      Boolean @default(false)
+}
