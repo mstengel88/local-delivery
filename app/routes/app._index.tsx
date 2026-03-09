@@ -5,7 +5,6 @@ import { registerCarrierService } from "../lib/register-carrier.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin } = await authenticate.admin(request);
-  const result = await registerCarrierService(admin);
   return data({ result });
 }
 
