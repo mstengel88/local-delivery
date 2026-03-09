@@ -14,7 +14,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   await registerCarrierService(admin);
   const settings = await getAppSettings(session.shop);
-
+  await registerCarrierService(admin);
   return data({ settings });
 }
 
