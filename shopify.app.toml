@@ -2,7 +2,7 @@
 
 client_id = "5fb95c4ae2305d47aa991a6ea994e100"
 name = "Local-Delivery"
-application_url = "https://ghstickets.com/"
+application_url = "https://app.ghstickets.com/"
 embedded = true
 
 [build]

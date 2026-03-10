@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs } from "react-router";
-import { json } from "react-router";
+import { data } from "react-router";
 import { getQuote } from "../lib/quote-engine.server";
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -32,7 +32,7 @@ export async function action({ request }: ActionFunctionArgs) {
     })),
   });
 
-  return json({
+  return data({
     rates: [
       {
         service_name: quote.serviceName,
