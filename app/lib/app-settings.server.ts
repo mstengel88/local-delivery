@@ -2,7 +2,7 @@ import { supabaseAdmin } from "./supabase.server";
 
 export async function getAppSettings(shop: string) {
   const { data, error } = await supabaseAdmin
-    .from("app_settings")
+    .from("shopify_app_settings")
     .select("*")
     .eq("shop", shop)
     .single();
@@ -30,7 +30,7 @@ export async function getAppSettings(shop: string) {
   };
 
   const { data: inserted, error: insertError } = await supabaseAdmin
-    .from("app_settings")
+    .from("shopify_app_settings")
     .insert(defaults)
     .select()
     .single();
@@ -72,7 +72,7 @@ export async function saveAppSettings(
   };
 
   const { data, error } = await supabaseAdmin
-    .from("app_settings")
+    .from("shopify_app_settings")
     .upsert(payload)
     .select()
     .single();
