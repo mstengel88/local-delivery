@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM node:20-slim AS build
 WORKDIR /app
 
@@ -9,12 +11,11 @@ ENV NPM_CONFIG_NETWORK_TIMEOUT=300000
 COPY package*.json ./
 COPY prisma ./prisma
 
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 RUN npx prisma generate
 
 COPY . .
 RUN npm run build
-
 RUN npm prune --omit=dev
 
 FROM node:20-slim AS runner
