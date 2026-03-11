@@ -10,7 +10,7 @@ import {
 import {useEffect, useMemo, useState} from "react";
 
 export default reactExtension(
-  "purchase.checkout.block.render",
+  "purchase.checkout.delivery-address.render-after",
   () => <Extension />
 );
 
@@ -154,22 +154,13 @@ function Extension() {
           </Text>
           <Text emphasis="bold">{estimate.outsideDeliveryPhone}</Text>
           <Text>
-            We added a placeholder delivery option below so you can see that this
-            address needs manual review, but you can’t continue until you use an
-            address inside our delivery area or contact us for a quote.
+            You can’t continue with this address until you choose an address
+            inside our delivery area or contact us for a custom quote.
           </Text>
         </BlockStack>
       </Banner>
     );
   }
 
-  return (
-    <Banner title="Local delivery estimate" status="info">
-      <BlockStack spacing="tight">
-        <Text emphasis="bold">{estimate.summary}</Text>
-        <Text>{estimate.description}</Text>
-        <Text>Estimated delivery: {estimate.eta}</Text>
-      </BlockStack>
-    </Banner>
-  );
+  return null;
 }
