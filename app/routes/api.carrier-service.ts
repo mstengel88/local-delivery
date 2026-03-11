@@ -33,18 +33,18 @@ export async function action({ request }: ActionFunctionArgs) {
   });
 
   if (quote.outsideDeliveryArea) {
-  return data({
-    rates: [
-      {
-        service_name: quote.serviceName,
-        service_code: quote.serviceCode,
-        total_price: String(quote.cents),
-        description: quote.description,
-        currency: rate.currency ?? "USD",
-      },
-    ],
-  });
-}
+    return data({
+      rates: [
+        {
+          service_name: "Call for delivery quote",
+          service_code: "CALL_FOR_QUOTE",
+          total_price: "1",
+          description: "Outside delivery area — please call for custom quote",
+          currency: rate.currency ?? "USD",
+        },
+      ],
+    });
+  }
 
   return data({
     rates: [

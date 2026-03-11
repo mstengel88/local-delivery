@@ -3,13 +3,14 @@ import {
   Banner,
   BlockStack,
   Text,
-  Spinner,
-  useApi,
   useBuyerJourneyIntercept,
-  useShippingAddress,
-  useCartLines,
+  useDeliveryGroups,
 } from "@shopify/ui-extensions-react/checkout";
-import {useEffect, useMemo, useState} from "react";
+
+const OUTSIDE_CODE = "CALL_FOR_QUOTE";
+const OUTSIDE_TITLE = "Call for delivery quote";
+const OUTSIDE_PHONE = "(262) 345-4001";
+const OUTSIDE_RADIUS = 50;
 
 export default reactExtension(
   "purchase.checkout.delivery-address.render-after",
@@ -17,98 +18,36 @@ export default reactExtension(
 );
 
 function Extension() {
-  const api = useApi();
-  const shippingAddress = useShippingAddress();
-  const lines = useCartLines();
+  const deliveryGroups = useDeliveryGroups();
 
-  const [loading, setLoading] = useState(false);
-  const [estimate, setEstimate] = useState(null);
-  const [error, setError] = useState("");
+  const allOptions = (deliveryGroups || []).flatMap(
+    (group) => group.deliveryOptions || []
+  );
 
-  const payload = useMemo(() => {
-    return {
-      shop: api.shop?.myshopifyDomain || "",
-      shippingAddress: {
-        address1: shippingAddress?.address1 || "",
-        address2: shippingAddress?.address2 || "",
-        city: shippingAddress?.city || "",
-        provinceCode: shippingAddress?.provinceCode || "",
-        zip: shippingAddress?.zip || "",
-        countryCode: shippingAddress?.countryCode || "US",
-      },
-      lines: (lines || []).map((line) => ({
-        quantity: line.quantity || 0,
-        sku: line.merchandise?.sku || "",
-        grams: line.merchandise?.weight || 0,
-        price: Number(line.cost?.totalAmount?.amount || 0),
-        vendor:
-          line.merchandise?.product?.vendor ||
-          line.merchandise?.vendor ||
-          "",
-      })),
-    };
-  }, [api.shop?.myshopifyDomain, shippingAddress, lines]);
+  const selectedOptions = (deliveryGroups || [])
+    .map((group) => {
+      const selectedHandle = group.selectedDeliveryOption?.handle;
+      return (group.deliveryOptions || []).find(
+        (option) => option.handle === selectedHandle
+      );
+    })
+    .filter(Boolean);
 
-  useEffect(() => {
-    let active = true;
+  const outsideOption =
+    selectedOptions.find(
+      (option) =>
+        option.code === OUTSIDE_CODE || option.title === OUTSIDE_TITLE
+    ) ||
+    allOptions.find(
+      (option) =>
+        option.code === OUTSIDE_CODE || option.title === OUTSIDE_TITLE
+    );
 
-    async function loadEstimate() {
-      if (!payload.shippingAddress.zip) {
-        setEstimate(null);
-        setError("");
-        setLoading(false);
-        return;
-      }
+  const isOutsideRadius = Boolean(outsideOption);
 
-      try {
-        setLoading(true);
-        setError("");
-
-        const response = await fetch(
-          "https://app.ghstickets.com/api.shipping-estimate",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-shopify-shop-domain": api.shop?.myshopifyDomain || "",
-            },
-            body: JSON.stringify(payload),
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error("Failed to load shipping estimate");
-        }
-
-        const json = await response.json();
-
-        if (active) {
-          setEstimate(json);
-        }
-      } catch (err) {
-        if (active) {
-          setEstimate(null);
-          setError(err instanceof Error ? err.message : "Unknown error");
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
-    }
-
-    loadEstimate();
-
-    return () => {
-      active = false;
-    };
-  }, [payload, api.shop?.myshopifyDomain]);
-
-  const isOutsideRadius = Boolean(estimate?.outsideDeliveryArea);
-
-  useBuyerJourneyIntercept(({canBlockProgress}) => {
+  useBuyerJourneyIntercept(({ canBlockProgress }) => {
     if (!isOutsideRadius || !canBlockProgress) {
-      return {behavior: "allow"};
+      return { behavior: "allow" };
     }
 
     return {
@@ -116,53 +55,29 @@ function Extension() {
       reason: "Outside delivery radius",
       errors: [
         {
-          message: `This address is ${estimate?.outsideDeliveryMiles || 0} miles away and outside our ${estimate?.outsideDeliveryRadius || 50}-mile delivery radius. Please call ${estimate?.outsideDeliveryPhone || "(262) 345-4001"} for a custom shipping quote.`,
+          message: `This address is outside our ${OUTSIDE_RADIUS}-mile delivery radius. Please call ${OUTSIDE_PHONE} for a custom shipping quote.`,
         },
       ],
     };
   });
 
-  if (loading) {
-    return (
-      <Banner title="Local delivery quote" status="info">
-        <BlockStack spacing="tight">
-          <Spinner />
-          <Text>Checking delivery distance…</Text>
-        </BlockStack>
-      </Banner>
-    );
-  }
+  if (!isOutsideRadius) return null;
 
-  if (error) {
-    return (
-      <Banner title="Shipping estimate unavailable" status="warning">
-        <Text>{error}</Text>
-      </Banner>
-    );
-  }
-
-  if (!estimate) return null;
-
-  if (isOutsideRadius) {
-    return (
-      <Banner title="Outside Delivery Area" status="warning">
-        <BlockStack spacing="tight">
-          <Text>
-            Your destination is {estimate.outsideDeliveryMiles} miles away,
-            which exceeds our {estimate.outsideDeliveryRadius}-mile delivery radius.
-          </Text>
-          <Text emphasis="bold">
-            Please call us for a custom shipping quote:
-          </Text>
-          <Text emphasis="bold">{estimate.outsideDeliveryPhone}</Text>
-          <Text>
-            You can’t continue with this address until you choose an address
-            inside our delivery area or contact us for a custom quote.
-          </Text>
-        </BlockStack>
-      </Banner>
-    );
-  }
-
-  return null;
+  return (
+    <Banner title="Outside Delivery Area" status="warning">
+      <BlockStack spacing="tight">
+        <Text>
+          This address is outside our {OUTSIDE_RADIUS}-mile delivery radius.
+        </Text>
+        <Text emphasis="bold">
+          Please call us for a custom shipping quote:
+        </Text>
+        <Text emphasis="bold">{OUTSIDE_PHONE}</Text>
+        <Text>
+          You can’t continue with this address until you choose an address
+          inside our delivery area or contact us for a quote.
+        </Text>
+      </BlockStack>
+    </Banner>
+  );
 }

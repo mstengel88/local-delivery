@@ -12,7 +12,6 @@ target = "purchase.checkout.delivery-address.render-after"
 
 [extensions.capabilities]
 api_access = true
-network_access = true
 block_progress = true
 
 [[extensions.metafields]]
