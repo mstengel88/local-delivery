@@ -18,30 +18,17 @@ export default reactExtension(
 );
 
 function Extension() {
-  const deliveryGroups = useDeliveryGroups();
+  const deliveryGroups = useDeliveryGroups() || [];
 
-  const allOptions = (deliveryGroups || []).flatMap(
-    (group) => group.deliveryOptions || []
+  const allOptions = deliveryGroups.flatMap((group) =>
+    Array.isArray(group.deliveryOptions) ? group.deliveryOptions : []
   );
 
-  const selectedOptions = (deliveryGroups || [])
-    .map((group) => {
-      const selectedHandle = group.selectedDeliveryOption?.handle;
-      return (group.deliveryOptions || []).find(
-        (option) => option.handle === selectedHandle
-      );
-    })
-    .filter(Boolean);
-
-  const outsideOption =
-    selectedOptions.find(
-      (option) =>
-        option.code === OUTSIDE_CODE || option.title === OUTSIDE_TITLE
-    ) ||
-    allOptions.find(
-      (option) =>
-        option.code === OUTSIDE_CODE || option.title === OUTSIDE_TITLE
-    );
+  const outsideOption = allOptions.find((option) => {
+    const code = typeof option?.code === "string" ? option.code : "";
+    const title = typeof option?.title === "string" ? option.title : "";
+    return code === OUTSIDE_CODE || title === OUTSIDE_TITLE;
+  });
 
   const isOutsideRadius = Boolean(outsideOption);
 
@@ -61,7 +48,9 @@ function Extension() {
     };
   });
 
-  if (!isOutsideRadius) return null;
+  if (!isOutsideRadius) {
+    return null;
+  }
 
   return (
     <Banner title="Outside Delivery Area" status="warning">
@@ -69,13 +58,11 @@ function Extension() {
         <Text>
           This address is outside our {OUTSIDE_RADIUS}-mile delivery radius.
         </Text>
-        <Text emphasis="bold">
-          Please call us for a custom shipping quote:
-        </Text>
-        <Text emphasis="bold">{OUTSIDE_PHONE}</Text>
+        <Text>Please call us for a custom shipping quote:</Text>
+        <Text>{OUTSIDE_PHONE}</Text>
         <Text>
-          You can’t continue with this address until you choose an address
-          inside our delivery area or contact us for a quote.
+          You can’t continue until you use an address inside our delivery area
+          or contact us for a quote.
         </Text>
       </BlockStack>
     </Banner>
