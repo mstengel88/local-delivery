@@ -3,6 +3,8 @@ import { getAppSettings } from "./app-settings.server";
 
 const MAX_QTY_PER_TRUCK = 22;
 const RATE_PER_MINUTE = 2.08;
+const MAX_DELIVERY_RADIUS_MILES = 50;
+const OUTSIDE_RADIUS_PHONE = "(262) 345-4001";
 
 export type QuoteInput = {
   shop: string;
@@ -29,6 +31,10 @@ export type QuoteResult = {
   description: string;
   eta: string;
   summary: string;
+  outsideDeliveryArea?: boolean;
+  outsideDeliveryMiles?: number;
+  outsideDeliveryRadius?: number;
+  outsideDeliveryPhone?: string;
 };
 
 async function getActiveOriginAddress(): Promise<{ label: string; address: string }> {
@@ -42,12 +48,14 @@ async function getActiveOriginAddress(): Promise<{ label: string; address: strin
   return (
     data || {
       label: "Menomonee Falls",
-      address: "W185 N7487, Narrow Ln, Menomonee Falls, WI 53051",
+      address: "W185 N7487 Narrow Ln, Menomonee Falls, WI 53051",
     }
   );
 }
 
-async function getOriginFromVendor(vendor?: string | null): Promise<{ label: string; address: string } | null> {
+async function getOriginFromVendor(
+  vendor?: string | null,
+): Promise<{ label: string; address: string } | null> {
   if (!vendor) return null;
 
   const { data } = await supabaseAdmin
@@ -63,7 +71,7 @@ async function getOriginFromVendor(vendor?: string | null): Promise<{ label: str
 async function getDriveTimeCost(
   originAddress: string,
   destinationAddress: string,
-  googleMapsApiKey: string
+  googleMapsApiKey: string,
 ): Promise<{
   costDollars: number;
   oneWayMiles: number;
@@ -79,14 +87,10 @@ async function getDriveTimeCost(
   const mapsRes = await fetch(mapsUrl.toString());
   const mapsData = await mapsRes.json();
 
-  if (mapsData.status !== "OK") {
-    return null;
-  }
+  if (mapsData.status !== "OK") return null;
 
   const element = mapsData.rows?.[0]?.elements?.[0];
-  if (!element || element.status !== "OK") {
-    return null;
-  }
+  if (!element || element.status !== "OK") return null;
 
   const oneWaySeconds = element.duration.value;
   const roundTripMinutes = (oneWaySeconds * 2) / 60;
@@ -149,7 +153,6 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   }
 
   const googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY;
-
   if (!googleMapsApiKey) {
     return {
       serviceName: "Custom Delivery",
@@ -162,6 +165,8 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   }
 
   const defaultOrigin = await getActiveOriginAddress();
+  const shippableItems = input.items.filter((item) => item.requiresShipping !== false);
+
   const routeCache: Record<
     string,
     {
@@ -175,8 +180,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   let totalDeliveryCostCents = 0;
   let totalTrucks = 0;
   const vendorLabels: string[] = [];
-
-  const shippableItems = input.items.filter((item) => item.requiresShipping !== false);
+  let maxOneWayMiles = 0;
 
   for (const item of shippableItems) {
     const itemQty = item.quantity || 1;
@@ -188,9 +192,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
       const vendorOrigin = await getOriginFromVendor(item.productVendor);
       if (vendorOrigin) {
         origin = vendorOrigin;
-        if (settings.showVendorSource) {
-          vendorLabels.push(item.productVendor);
-        }
+        if (settings.showVendorSource) vendorLabels.push(item.productVendor);
       }
     }
 
@@ -204,6 +206,10 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
       routeCost = result;
     }
 
+    if (routeCost.oneWayMiles > maxOneWayMiles) {
+      maxOneWayMiles = routeCost.oneWayMiles;
+    }
+
     let itemCostDollars = routeCost.costDollars * trucksForItem;
 
     if (settings.enableRemoteSurcharge && input.postalCode.startsWith("9")) {
@@ -215,7 +221,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
     if (settings.enableDebugLogging) {
       console.log(
-        `[QUOTE] vendor=${item.productVendor || "default"} qty=${itemQty} trucks=${trucksForItem} cost=${itemCostDollars.toFixed(2)}`
+        `[QUOTE] vendor=${item.productVendor || "default"} qty=${itemQty} trucks=${trucksForItem} miles=${routeCost.oneWayMiles} cost=${itemCostDollars.toFixed(2)}`,
       );
     }
   }
@@ -224,8 +230,9 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
     const fallback = await getDriveTimeCost(defaultOrigin.address, destinationAddress, googleMapsApiKey);
 
     if (fallback) {
-      let fallbackDollars = fallback.costDollars;
+      maxOneWayMiles = fallback.oneWayMiles;
 
+      let fallbackDollars = fallback.costDollars;
       if (settings.enableRemoteSurcharge && input.postalCode.startsWith("9")) {
         fallbackDollars += 3;
       }
@@ -235,9 +242,25 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
     }
   }
 
+  if (maxOneWayMiles > MAX_DELIVERY_RADIUS_MILES) {
+    return {
+      serviceName: "Custom Delivery",
+      serviceCode: "CUSTOM_DELIVERY",
+      cents: 0,
+      description: `Outside delivery area. Please call ${OUTSIDE_RADIUS_PHONE} for a custom shipping quote.`,
+      eta: "Call for quote",
+      summary: `Outside delivery area: ${maxOneWayMiles} miles away.`,
+      outsideDeliveryArea: true,
+      outsideDeliveryMiles: maxOneWayMiles,
+      outsideDeliveryRadius: MAX_DELIVERY_RADIUS_MILES,
+      outsideDeliveryPhone: OUTSIDE_RADIUS_PHONE,
+    };
+  }
+
+  const uniqueVendors = Array.from(new Set(vendorLabels)).filter(Boolean);
   const vendorText =
-    settings.showVendorSource && vendorLabels.length > 0
-      ? ` Vendor source: ${Array.from(new Set(vendorLabels)).join(", ")}.`
+    settings.showVendorSource && uniqueVendors.length > 0
+      ? ` Vendor source: ${uniqueVendors.join(", ")}.`
       : "";
 
   return {
@@ -250,5 +273,9 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
         : `Standard delivery pricing.${vendorText}`,
     eta: "2–4 business days",
     summary: `Shipping calculated from your address: $${(totalDeliveryCostCents / 100).toFixed(2)}`,
+    outsideDeliveryArea: false,
+    outsideDeliveryMiles: maxOneWayMiles,
+    outsideDeliveryRadius: MAX_DELIVERY_RADIUS_MILES,
+    outsideDeliveryPhone: OUTSIDE_RADIUS_PHONE,
   };
 }

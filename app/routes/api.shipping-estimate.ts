@@ -1,4 +1,3 @@
-// app/routes/api.shipping-estimate.ts
 import type { ActionFunctionArgs } from "react-router";
 import { data } from "react-router";
 import { getQuote } from "../lib/quote-engine.server";
@@ -39,5 +38,9 @@ export async function action({ request }: ActionFunctionArgs) {
     description: quote.description,
     cents: quote.cents,
     serviceName: quote.serviceName,
+    outsideDeliveryArea: quote.outsideDeliveryArea ?? false,
+    outsideDeliveryMiles: quote.outsideDeliveryMiles ?? 0,
+    outsideDeliveryRadius: quote.outsideDeliveryRadius ?? 50,
+    outsideDeliveryPhone: quote.outsideDeliveryPhone ?? "(262) 345-4001",
   });
 }

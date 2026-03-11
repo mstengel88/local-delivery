@@ -32,6 +32,10 @@ export async function action({ request }: ActionFunctionArgs) {
     })),
   });
 
+  if (quote.outsideDeliveryArea) {
+    return data({ rates: [] });
+  }
+
   return data({
     rates: [
       {
