@@ -243,19 +243,19 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   }
 
   if (maxOneWayMiles > MAX_DELIVERY_RADIUS_MILES) {
-    return {
-      serviceName: "Custom Delivery",
-      serviceCode: "CUSTOM_DELIVERY",
-      cents: 0,
-      description: `Outside delivery area. Please call ${OUTSIDE_RADIUS_PHONE} for a custom shipping quote.`,
-      eta: "Call for quote",
-      summary: `Outside delivery area: ${maxOneWayMiles} miles away.`,
-      outsideDeliveryArea: true,
-      outsideDeliveryMiles: maxOneWayMiles,
-      outsideDeliveryRadius: MAX_DELIVERY_RADIUS_MILES,
-      outsideDeliveryPhone: OUTSIDE_RADIUS_PHONE,
-    };
-  }
+  return {
+    serviceName: "Call for delivery quote",
+    serviceCode: "CALL_FOR_QUOTE",
+    cents: 1,
+    description: "Outside delivery area — please call for custom quote",
+    eta: "Same business day",
+    summary: "Custom delivery quote required",
+    outsideDeliveryArea: true,
+    outsideDeliveryMiles: maxOneWayMiles,
+    outsideDeliveryRadius: MAX_DELIVERY_RADIUS_MILES,
+    outsideDeliveryPhone: OUTSIDE_RADIUS_PHONE,
+  };
+}
 
   const uniqueVendors = Array.from(new Set(vendorLabels)).filter(Boolean);
   const vendorText =

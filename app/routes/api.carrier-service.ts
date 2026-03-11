@@ -36,10 +36,10 @@ export async function action({ request }: ActionFunctionArgs) {
   return data({
     rates: [
       {
-        service_name: "Call for delivery quote",
-        service_code: "OUTSIDE_DELIVERY_AREA",
-        total_price: "0",
-        description: "Outside delivery area — please call for custom quote",
+        service_name: quote.serviceName,
+        service_code: quote.serviceCode,
+        total_price: String(quote.cents),
+        description: quote.description,
         currency: rate.currency ?? "USD",
       },
     ],

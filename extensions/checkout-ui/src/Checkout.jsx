@@ -114,7 +114,7 @@ function Extension() {
       reason: "Outside delivery radius",
       errors: [
         {
-          message: `This address is outside our ${estimate?.outsideDeliveryRadius || 50}-mile delivery radius. Please call ${estimate?.outsideDeliveryPhone || "(262) 345-4001"} for a custom shipping quote.`,
+          message: `This address is ${estimate?.outsideDeliveryMiles || 0} miles away and outside our ${estimate?.outsideDeliveryRadius || 50}-mile delivery radius. Please call ${estimate?.outsideDeliveryPhone || "(262) 345-4001"} for a custom shipping quote.`,
         },
       ],
     };
@@ -122,10 +122,10 @@ function Extension() {
 
   if (loading) {
     return (
-      <Banner title="Local Delivery">
+      <Banner title="Local delivery quote" status="info">
         <BlockStack spacing="tight">
           <Spinner />
-          <Text>Calculating shipping…</Text>
+          <Text>Checking delivery distance…</Text>
         </BlockStack>
       </Banner>
     );
@@ -133,35 +133,30 @@ function Extension() {
 
   if (error) {
     return (
-      <Banner status="warning" title="Shipping estimate unavailable">
+      <Banner title="Shipping estimate unavailable" status="warning">
         <Text>{error}</Text>
       </Banner>
     );
   }
 
-  if (!estimate) {
-    return (
-      <Banner title="Local Delivery">
-        <Text>No estimate returned yet.</Text>
-      </Banner>
-    );
-  }
+  if (!estimate) return null;
 
   if (isOutsideRadius) {
     return (
-      <Banner status="warning" title="Outside Delivery Area">
+      <Banner title="Outside Delivery Area" status="warning">
         <BlockStack spacing="tight">
           <Text>
             Your destination is {estimate.outsideDeliveryMiles} miles away,
             which exceeds our {estimate.outsideDeliveryRadius}-mile delivery radius.
           </Text>
-          <Text>
+          <Text emphasis="bold">
             Please call us for a custom shipping quote:
           </Text>
-          <Text>{estimate.outsideDeliveryPhone}</Text>
+          <Text emphasis="bold">{estimate.outsideDeliveryPhone}</Text>
           <Text>
-            You can’t continue with this address until you choose an address
-            inside our delivery area or contact us for a custom quote.
+            We added a placeholder delivery option below so you can see that this
+            address needs manual review, but you can’t continue until you use an
+            address inside our delivery area or contact us for a quote.
           </Text>
         </BlockStack>
       </Banner>
@@ -169,9 +164,9 @@ function Extension() {
   }
 
   return (
-    <Banner title="Local Delivery Estimate">
+    <Banner title="Local delivery estimate" status="info">
       <BlockStack spacing="tight">
-        <Text>{estimate.summary}</Text>
+        <Text emphasis="bold">{estimate.summary}</Text>
         <Text>{estimate.description}</Text>
         <Text>Estimated delivery: {estimate.eta}</Text>
       </BlockStack>
