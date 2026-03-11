@@ -6,6 +6,8 @@ import {
   Spinner,
   useApi,
   useBuyerJourneyIntercept,
+  useShippingAddress,
+  useCartLines,
 } from "@shopify/ui-extensions-react/checkout";
 import {useEffect, useMemo, useState} from "react";
 
@@ -16,12 +18,12 @@ export default reactExtension(
 
 function Extension() {
   const api = useApi();
+  const shippingAddress = useShippingAddress();
+  const lines = useCartLines();
+
   const [loading, setLoading] = useState(false);
   const [estimate, setEstimate] = useState(null);
   const [error, setError] = useState("");
-
-  const shippingAddress = api.shippingAddress?.current;
-  const lines = api.lines?.current || [];
 
   const payload = useMemo(() => {
     return {
@@ -34,7 +36,7 @@ function Extension() {
         zip: shippingAddress?.zip || "",
         countryCode: shippingAddress?.countryCode || "US",
       },
-      lines: lines.map((line) => ({
+      lines: (lines || []).map((line) => ({
         quantity: line.quantity || 0,
         sku: line.merchandise?.sku || "",
         grams: line.merchandise?.weight || 0,
