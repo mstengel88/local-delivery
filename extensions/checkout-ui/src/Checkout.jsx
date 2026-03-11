@@ -1,18 +1,16 @@
-// extensions/checkout-estimator/src/Checkout.jsx
 import {
   reactExtension,
+  Banner,
   BlockStack,
   Text,
   Spinner,
-  Link,
-  Icon,
   useApi,
-  View,
+  useBuyerJourneyIntercept,
 } from "@shopify/ui-extensions-react/checkout";
-import { useEffect, useMemo, useState } from "react";
+import {useEffect, useMemo, useState} from "react";
 
 export default reactExtension(
-  "purchase.checkout.shipping-option-list.render-before",
+  "purchase.checkout.block.render",
   () => <Extension />
 );
 
@@ -104,76 +102,79 @@ function Extension() {
     };
   }, [payload, api.shop?.myshopifyDomain]);
 
+  const isOutsideRadius = Boolean(estimate?.outsideDeliveryArea);
+
+  useBuyerJourneyIntercept(({canBlockProgress}) => {
+    if (!isOutsideRadius || !canBlockProgress) {
+      return {behavior: "allow"};
+    }
+
+    return {
+      behavior: "block",
+      reason: "Outside delivery radius",
+      errors: [
+        {
+          message: `This address is outside our ${estimate?.outsideDeliveryRadius || 50}-mile delivery radius. Please call ${estimate?.outsideDeliveryPhone || "(262) 345-4001"} for a custom shipping quote.`,
+        },
+      ],
+    };
+  });
+
   if (loading) {
     return (
-      <BlockStack spacing="tight">
-        <Spinner />
-        <Text>Calculating shipping…</Text>
-      </BlockStack>
+      <Banner title="Local Delivery">
+        <BlockStack spacing="tight">
+          <Spinner />
+          <Text>Calculating shipping…</Text>
+        </BlockStack>
+      </Banner>
     );
   }
 
   if (error) {
     return (
-      <View
-        border="base"
-        cornerRadius="large"
-        padding="base"
-        background="subdued"
-      >
-        <BlockStack spacing="tight" inlineAlignment="center">
-          <Text emphasis="bold">Shipping estimate unavailable</Text>
-          <Text appearance="subdued">{error}</Text>
-        </BlockStack>
-      </View>
+      <Banner status="warning" title="Shipping estimate unavailable">
+        <Text>{error}</Text>
+      </Banner>
     );
   }
 
-  if (!estimate) return null;
-
-  if (estimate.outsideDeliveryArea) {
+  if (!estimate) {
     return (
-      <View
-        border="base"
-        cornerRadius="large"
-        padding="loose"
-        background="subdued"
-      >
-        <BlockStack spacing="base" inlineAlignment="center">
-          <Icon source="phone" />
-          <Text size="large" emphasis="bold">
-            Outside Delivery Area
-          </Text>
-          <Text appearance="subdued" alignment="center">
+      <Banner title="Local Delivery">
+        <Text>No estimate returned yet.</Text>
+      </Banner>
+    );
+  }
+
+  if (isOutsideRadius) {
+    return (
+      <Banner status="warning" title="Outside Delivery Area">
+        <BlockStack spacing="tight">
+          <Text>
             Your destination is {estimate.outsideDeliveryMiles} miles away,
-            which exceeds our {estimate.outsideDeliveryRadius}-mile delivery
-            radius.
+            which exceeds our {estimate.outsideDeliveryRadius}-mile delivery radius.
           </Text>
-          <Text emphasis="bold" alignment="center">
+          <Text>
             Please call us for a custom shipping quote:
           </Text>
-          <Link to={`tel:${estimate.outsideDeliveryPhone}`}>
-            <Text size="large" emphasis="bold" alignment="center">
-              {estimate.outsideDeliveryPhone}
-            </Text>
-          </Link>
+          <Text>{estimate.outsideDeliveryPhone}</Text>
+          <Text>
+            You can’t continue with this address until you choose an address
+            inside our delivery area or contact us for a custom quote.
+          </Text>
         </BlockStack>
-      </View>
+      </Banner>
     );
   }
 
   return (
-    <View
-      border="base"
-      cornerRadius="large"
-      padding="base"
-      background="subdued"
-    >
+    <Banner title="Local Delivery Estimate">
       <BlockStack spacing="tight">
-        <Text emphasis="bold">{estimate.summary}</Text>
+        <Text>{estimate.summary}</Text>
         <Text>{estimate.description}</Text>
-        <Text appearance="subdued">Estimated delivery: {estimate.eta}</Text>
+        <Text>Estimated delivery: {estimate.eta}</Text>
       </BlockStack>
-    </View>
+    </Banner>
   );
 }
