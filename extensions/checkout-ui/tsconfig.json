@@ -3,9 +3,10 @@
     "jsx": "react-jsx",
     "jsxImportSource": "preact",
     "target": "ES2020",
+    "module": "NodeNext",
     "checkJs": true,
     "allowJs": true,
-    "moduleResolution": "node",
+    "moduleResolution": "nodenext",
     "esModuleInterop": true,
   },
   "include": ["./src", "./shopify.d.ts"]
