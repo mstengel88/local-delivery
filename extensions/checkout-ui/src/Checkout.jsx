@@ -1,9 +1,4 @@
-import {
-  reactExtension,
-  Text,
-} from "@shopify/ui-extensions-react/checkout";
-
-export default reactExtension(
-  "purchase.checkout.shipping-option-list.render-before",
-  () => <Text>LOCAL DELIVERY DEBUG</Text>
-);
+export default function Extension(root, { extension }) {
+  const textComponent = root.createText("LOCAL DELIVERY DEBUG");
+  root.appendChild(textComponent);
+}
