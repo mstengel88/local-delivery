@@ -9,3 +9,6 @@ type = "ui_extension"
 [[extensions.targeting]]
 module = "./src/Checkout.jsx"
 target = "purchase.checkout.block.render"
+
+[extensions.capabilities]
+block_progress = true
