@@ -7,5 +7,5 @@ uid = "fddfc370-27c7-c30f-4ee0-a927194e2accadefd40c"
 type = "ui_extension"
 
 [[extensions.targeting]]
-module = "./src/Checkout.jsx"
+module = "./src/Checkout.js"
 target = "purchase.checkout.block.render"
