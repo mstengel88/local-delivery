@@ -2,7 +2,8 @@
   "name": "checkout-ui",
   "private": true,
   "dependencies": {
-    "@shopify/ui-extensions": "2026.1.x",
-    "preact": "^10.26.4"
+    "preact": "^10.26.4",
+    "@preact/signals": "^2.3.1",
+    "@shopify/ui-extensions": "2026.1.x"
   }
 }
