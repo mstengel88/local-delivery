@@ -11,9 +11,4 @@ module = "./src/Checkout.jsx"
 target = "purchase.checkout.shipping-option-list.render-before"
 
 [extensions.capabilities]
-api_access = true
 block_progress = true
-
-[[extensions.metafields]]
-namespace = "$app"
-key = "requestedFreeGift"
