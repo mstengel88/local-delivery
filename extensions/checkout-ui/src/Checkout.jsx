@@ -1,4 +1,13 @@
-export default function Extension(root, { extension }) {
-  const textComponent = root.createText("LOCAL DELIVERY DEBUG");
-  root.appendChild(textComponent);
-}
+import {
+  extension,
+  Text,
+} from "@shopify/ui-extensions/checkout";
+
+export default extension(
+  "purchase.checkout.block.render",
+  (root) => {
+    root.append(
+      root.createComponent(Text, {}, "LOCAL DELIVERY DEBUG")
+    );
+  }
+);
