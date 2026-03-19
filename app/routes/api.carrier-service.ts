@@ -29,6 +29,11 @@ export async function action({ request }: ActionFunctionArgs) {
       price: item.price ?? 0,
       requiresShipping: item.requires_shipping !== false,
       productVendor: item.vendor || item.product_vendor || "",
+      productCategory:
+        item.product_category ||
+        item.category ||
+        item.product_type ||
+        "",
     })),
   });
 

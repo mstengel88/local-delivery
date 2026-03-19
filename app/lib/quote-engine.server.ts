@@ -1,7 +1,10 @@
 import { supabaseAdmin } from "./supabase.server";
 import { getAppSettings } from "./app-settings.server";
 
-const MAX_QTY_PER_TRUCK = 22;
+const DEFAULT_MAX_QTY_PER_TRUCK = 22;
+const MULCH_MAX_QTY_PER_TRUCK = 25;
+const SOILS_AND_AMENDMENTS_MAX_QTY_PER_TRUCK = 25;
+
 const RATE_PER_MINUTE = 2.08;
 const MAX_DELIVERY_RADIUS_MILES = 50;
 const OUTSIDE_RADIUS_PHONE = "(262) 345-4001";
@@ -21,6 +24,7 @@ export type QuoteInput = {
     price?: number;
     requiresShipping?: boolean;
     productVendor?: string;
+    productCategory?: string;
   }>;
 };
 
@@ -66,6 +70,27 @@ async function getOriginFromVendor(
     .single();
 
   return data || null;
+}
+
+function normalizeCategory(category?: string | null): string {
+  return (category || "").trim().toLowerCase();
+}
+
+function getTruckCapacityForCategory(category?: string | null): number {
+  const normalized = normalizeCategory(category);
+
+  if (normalized.includes("mulch")) {
+    return MULCH_MAX_QTY_PER_TRUCK;
+  }
+
+  if (
+    normalized.includes("soils & amendments") ||
+    normalized.includes("soils and amendments")
+  ) {
+    return SOILS_AND_AMENDMENTS_MAX_QTY_PER_TRUCK;
+  }
+
+  return DEFAULT_MAX_QTY_PER_TRUCK;
 }
 
 async function getDriveTimeCost(
@@ -184,7 +209,8 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
   for (const item of shippableItems) {
     const itemQty = item.quantity || 1;
-    const trucksForItem = Math.max(1, Math.ceil(itemQty / MAX_QTY_PER_TRUCK));
+    const truckCapacity = getTruckCapacityForCategory(item.productCategory);
+    const trucksForItem = Math.max(1, Math.ceil(itemQty / truckCapacity));
 
     let origin = defaultOrigin;
 
@@ -192,7 +218,9 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
       const vendorOrigin = await getOriginFromVendor(item.productVendor);
       if (vendorOrigin) {
         origin = vendorOrigin;
-        if (settings.showVendorSource) vendorLabels.push(item.productVendor);
+        if (settings.showVendorSource) {
+          vendorLabels.push(item.productVendor);
+        }
       }
     }
 
@@ -200,8 +228,14 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
     let routeCost = routeCache[cacheKey];
 
     if (!routeCost) {
-      const result = await getDriveTimeCost(origin.address, destinationAddress, googleMapsApiKey);
+      const result = await getDriveTimeCost(
+        origin.address,
+        destinationAddress,
+        googleMapsApiKey,
+      );
+
       if (!result) continue;
+
       routeCache[cacheKey] = result;
       routeCost = result;
     }
@@ -221,13 +255,17 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
     if (settings.enableDebugLogging) {
       console.log(
-        `[QUOTE] vendor=${item.productVendor || "default"} qty=${itemQty} trucks=${trucksForItem} miles=${routeCost.oneWayMiles} cost=${itemCostDollars.toFixed(2)}`,
+        `[QUOTE] vendor=${item.productVendor || "default"} category=${item.productCategory || "default"} qty=${itemQty} truckCapacity=${truckCapacity} trucks=${trucksForItem} miles=${routeCost.oneWayMiles} cost=${itemCostDollars.toFixed(2)}`,
       );
     }
   }
 
   if (totalTrucks === 0) {
-    const fallback = await getDriveTimeCost(defaultOrigin.address, destinationAddress, googleMapsApiKey);
+    const fallback = await getDriveTimeCost(
+      defaultOrigin.address,
+      destinationAddress,
+      googleMapsApiKey,
+    );
 
     if (fallback) {
       maxOneWayMiles = fallback.oneWayMiles;
@@ -243,19 +281,19 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   }
 
   if (maxOneWayMiles > MAX_DELIVERY_RADIUS_MILES) {
-  return {
-    serviceName: "Call for delivery quote",
-    serviceCode: "CALL_FOR_QUOTE",
-    cents: 1,
-    description: "Outside delivery area — please call for custom quote",
-    eta: "Same business day",
-    summary: "Custom delivery quote required",
-    outsideDeliveryArea: true,
-    outsideDeliveryMiles: maxOneWayMiles,
-    outsideDeliveryRadius: MAX_DELIVERY_RADIUS_MILES,
-    outsideDeliveryPhone: OUTSIDE_RADIUS_PHONE,
-  };
-}
+    return {
+      serviceName: "Call for delivery quote",
+      serviceCode: "CALL_FOR_QUOTE",
+      cents: 1,
+      description: "Outside delivery area — please call for custom quote",
+      eta: "Same business day",
+      summary: "Custom delivery quote required",
+      outsideDeliveryArea: true,
+      outsideDeliveryMiles: maxOneWayMiles,
+      outsideDeliveryRadius: MAX_DELIVERY_RADIUS_MILES,
+      outsideDeliveryPhone: OUTSIDE_RADIUS_PHONE,
+    };
+  }
 
   const uniqueVendors = Array.from(new Set(vendorLabels)).filter(Boolean);
   const vendorText =
