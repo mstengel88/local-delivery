@@ -372,7 +372,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
       : "";
 
   return {
-    serviceName: "Custom Delivery",
+    serviceName: "Green Hills Delivery Fee",
     serviceCode: "CUSTOM_DELIVERY",
     cents: totalDeliveryCostCents,
     description:
