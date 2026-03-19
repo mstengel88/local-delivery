@@ -2,12 +2,41 @@ import { supabaseAdmin } from "./supabase.server";
 import { getAppSettings } from "./app-settings.server";
 
 const DEFAULT_MAX_QTY_PER_TRUCK = 22;
-const MULCH_MAX_QTY_PER_TRUCK = 25;
-const SOILS_AND_AMENDMENTS_MAX_QTY_PER_TRUCK = 25;
-
 const RATE_PER_MINUTE = 2.08;
 const MAX_DELIVERY_RADIUS_MILES = 50;
 const OUTSIDE_RADIUS_PHONE = "(262) 345-4001";
+
+type MaterialRule = {
+  prefix: string;
+  material_name: string;
+  truck_capacity: number;
+  is_active: boolean;
+  sort_order: number;
+};
+
+const FALLBACK_MATERIAL_RULES: MaterialRule[] = [
+  {
+    prefix: "100",
+    material_name: "Aggregate",
+    truck_capacity: 22,
+    is_active: true,
+    sort_order: 100,
+  },
+  {
+    prefix: "300",
+    material_name: "Mulch",
+    truck_capacity: 25,
+    is_active: true,
+    sort_order: 300,
+  },
+  {
+    prefix: "400",
+    material_name: "Soil",
+    truck_capacity: 25,
+    is_active: true,
+    sort_order: 400,
+  },
+];
 
 export type QuoteInput = {
   shop: string;
@@ -72,25 +101,59 @@ async function getOriginFromVendor(
   return data || null;
 }
 
-function normalizeCategory(category?: string | null): string {
-  return (category || "").trim().toLowerCase();
+async function getMaterialRules(): Promise<MaterialRule[]> {
+  const { data, error } = await supabaseAdmin
+    .from("shipping_material_rules")
+    .select("prefix, material_name, truck_capacity, is_active, sort_order")
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true });
+
+  if (error || !data || data.length === 0) {
+    return FALLBACK_MATERIAL_RULES;
+  }
+
+  return data;
 }
 
-function getTruckCapacityForCategory(category?: string | null): number {
-  const normalized = normalizeCategory(category);
+function normalizeSku(value?: string | null): string {
+  return (value || "").trim();
+}
 
-  if (normalized.includes("mulch")) {
-    return MULCH_MAX_QTY_PER_TRUCK;
+function getMaterialFromSku(
+  sku: string | undefined,
+  rules: MaterialRule[],
+): {
+  prefix: string | null;
+  materialName: string;
+  truckCapacity: number;
+} {
+  const normalizedSku = normalizeSku(sku);
+  const match = normalizedSku.match(/^(\d{3})/);
+  const prefix = match ? match[1] : null;
+
+  if (!prefix) {
+    return {
+      prefix: null,
+      materialName: "Default",
+      truckCapacity: DEFAULT_MAX_QTY_PER_TRUCK,
+    };
   }
 
-  if (
-    normalized.includes("soils & amendments") ||
-    normalized.includes("soils and amendments")
-  ) {
-    return SOILS_AND_AMENDMENTS_MAX_QTY_PER_TRUCK;
+  const rule = rules.find((r) => r.prefix === prefix);
+
+  if (!rule) {
+    return {
+      prefix,
+      materialName: "Default",
+      truckCapacity: DEFAULT_MAX_QTY_PER_TRUCK,
+    };
   }
 
-  return DEFAULT_MAX_QTY_PER_TRUCK;
+  return {
+    prefix,
+    materialName: rule.material_name,
+    truckCapacity: Number(rule.truck_capacity) || DEFAULT_MAX_QTY_PER_TRUCK,
+  };
 }
 
 async function getDriveTimeCost(
@@ -189,6 +252,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
     };
   }
 
+  const materialRules = await getMaterialRules();
   const defaultOrigin = await getActiveOriginAddress();
   const shippableItems = input.items.filter((item) => item.requiresShipping !== false);
 
@@ -209,7 +273,13 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
   for (const item of shippableItems) {
     const itemQty = item.quantity || 1;
-    const truckCapacity = getTruckCapacityForCategory(item.productCategory);
+
+    const {
+      prefix,
+      materialName,
+      truckCapacity,
+    } = getMaterialFromSku(item.sku, materialRules);
+
     const trucksForItem = Math.max(1, Math.ceil(itemQty / truckCapacity));
 
     let origin = defaultOrigin;
@@ -255,7 +325,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
     if (settings.enableDebugLogging) {
       console.log(
-        `[QUOTE] vendor=${item.productVendor || "default"} category=${item.productCategory || "default"} qty=${itemQty} truckCapacity=${truckCapacity} trucks=${trucksForItem} miles=${routeCost.oneWayMiles} cost=${itemCostDollars.toFixed(2)}`,
+        `[QUOTE] material=${materialName} prefix=${prefix || "none"} sku=${item.sku || "none"} qty=${itemQty} capacity=${truckCapacity} trucks=${trucksForItem} miles=${routeCost.oneWayMiles} cost=${itemCostDollars.toFixed(2)}`,
       );
     }
   }

@@ -14,6 +14,15 @@ export async function action({ request }: ActionFunctionArgs) {
     process.env.SHOPIFY_STORE_DOMAIN ||
     "";
 
+  const mappedItems = items.map((item: any) => ({
+    sku: item.sku,
+    quantity: item.quantity ?? 0,
+    grams: item.grams ?? 0,
+    price: item.price ?? 0,
+    requiresShipping: item.requires_shipping !== false,
+    productVendor: item.vendor || item.product_vendor || "",
+  }));
+
   const quote = await getQuote({
     shop,
     postalCode: destination.postal_code ?? "",
@@ -22,19 +31,7 @@ export async function action({ request }: ActionFunctionArgs) {
     city: destination.city ?? "",
     address1: destination.address1 ?? "",
     address2: destination.address2 ?? "",
-    items: items.map((item: any) => ({
-      sku: item.sku,
-      quantity: item.quantity ?? 0,
-      grams: item.grams ?? 0,
-      price: item.price ?? 0,
-      requiresShipping: item.requires_shipping !== false,
-      productVendor: item.vendor || item.product_vendor || "",
-      productCategory:
-        item.product_category ||
-        item.category ||
-        item.product_type ||
-        "",
-    })),
+    items: mappedItems,
   });
 
   if (quote.outsideDeliveryArea) {
