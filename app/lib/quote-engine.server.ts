@@ -1,10 +1,39 @@
 import { supabaseAdmin } from "./supabase.server";
 import { getAppSettings } from "./app-settings.server";
 
+/* ---------------- CONFIG ---------------- */
+
 const DEFAULT_MAX_QTY_PER_TRUCK = 22;
 const RATE_PER_MINUTE = 2.08;
 const MAX_DELIVERY_RADIUS_MILES = 50;
 const OUTSIDE_RADIUS_PHONE = "(262) 345-4001";
+
+/* ---------------- CACHE ---------------- */
+
+type CacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+};
+
+const TTL_SHORT = 60_000; // 1 min
+const TTL_LONG = 10 * 60_000; // 10 min
+
+function getCache<T>(entry: CacheEntry<T> | null): T | null {
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) return null;
+  return entry.value;
+}
+
+function setCache<T>(value: T, ttl: number): CacheEntry<T> {
+  return { value, expiresAt: Date.now() + ttl };
+}
+
+let materialRulesCache: CacheEntry<MaterialRule[]> | null = null;
+let activeOriginCache: CacheEntry<{ label: string; address: string }> | null = null;
+const vendorOriginCache = new Map<string, CacheEntry<any>>();
+const distanceCache = new Map<string, CacheEntry<any>>();
+
+/* ---------------- TYPES ---------------- */
 
 type MaterialRule = {
   prefix: string;
@@ -15,27 +44,9 @@ type MaterialRule = {
 };
 
 const FALLBACK_MATERIAL_RULES: MaterialRule[] = [
-  {
-    prefix: "100",
-    material_name: "Aggregate",
-    truck_capacity: 22,
-    is_active: true,
-    sort_order: 100,
-  },
-  {
-    prefix: "300",
-    material_name: "Mulch",
-    truck_capacity: 25,
-    is_active: true,
-    sort_order: 300,
-  },
-  {
-    prefix: "400",
-    material_name: "Soil",
-    truck_capacity: 25,
-    is_active: true,
-    sort_order: 400,
-  },
+  { prefix: "100", material_name: "Aggregate", truck_capacity: 22, is_active: true, sort_order: 100 },
+  { prefix: "300", material_name: "Mulch", truck_capacity: 25, is_active: true, sort_order: 300 },
+  { prefix: "400", material_name: "Soil", truck_capacity: 25, is_active: true, sort_order: 400 },
 ];
 
 export type QuoteInput = {
@@ -49,11 +60,8 @@ export type QuoteInput = {
   items: Array<{
     sku?: string;
     quantity: number;
-    grams?: number;
-    price?: number;
     requiresShipping?: boolean;
     productVendor?: string;
-    productCategory?: string;
   }>;
 };
 
@@ -70,157 +78,120 @@ export type QuoteResult = {
   outsideDeliveryPhone?: string;
 };
 
-async function getActiveOriginAddress(): Promise<{ label: string; address: string }> {
-  const { data } = await supabaseAdmin
-    .from("origin_addresses")
-    .select("label, address")
-    .eq("is_active", true)
-    .limit(1)
-    .single();
+/* ---------------- HELPERS ---------------- */
 
-  return (
-    data || {
-      label: "Menomonee Falls",
-      address: "W185 N7487 Narrow Ln, Menomonee Falls, WI 53051",
-    }
-  );
+async function getMaterialRules(): Promise<MaterialRule[]> {
+  const cached = getCache(materialRulesCache);
+  if (cached) return cached;
+
+  const { data } = await supabaseAdmin
+    .from("shipping_material_rules")
+    .select("*")
+    .eq("is_active", true);
+
+  const result = data?.length ? data : FALLBACK_MATERIAL_RULES;
+
+  materialRulesCache = setCache(result, TTL_SHORT);
+  return result;
 }
 
-async function getOriginFromVendor(
-  vendor?: string | null,
-): Promise<{ label: string; address: string } | null> {
-  if (!vendor) return null;
+async function getActiveOriginAddress() {
+  const cached = getCache(activeOriginCache);
+  if (cached) return cached;
 
   const { data } = await supabaseAdmin
     .from("origin_addresses")
-    .select("label, address")
-    .ilike("label", vendor)
-    .limit(1)
+    .select("label,address")
+    .eq("is_active", true)
     .single();
 
+  const result =
+    data || {
+      label: "Default",
+      address: "W185 N7487 Narrow Ln, Menomonee Falls, WI 53051",
+    };
+
+  activeOriginCache = setCache(result, TTL_SHORT);
+  return result;
+}
+
+async function getOriginFromVendor(vendor?: string | null) {
+  if (!vendor) return null;
+
+  const cached = vendorOriginCache.get(vendor);
+  const val = getCache(cached || null);
+  if (val !== null) return val;
+
+  const { data } = await supabaseAdmin
+    .from("origin_addresses")
+    .select("label,address")
+    .ilike("label", vendor)
+    .single();
+
+  vendorOriginCache.set(vendor, setCache(data || null, TTL_LONG));
   return data || null;
 }
 
-async function getMaterialRules(): Promise<MaterialRule[]> {
-  const { data, error } = await supabaseAdmin
-    .from("shipping_material_rules")
-    .select("prefix, material_name, truck_capacity, is_active, sort_order")
-    .eq("is_active", true)
-    .order("sort_order", { ascending: true });
-
-  if (error || !data || data.length === 0) {
-    return FALLBACK_MATERIAL_RULES;
-  }
-
-  return data;
-}
-
-function normalizeSku(value?: string | null): string {
-  return (value || "").trim();
-}
-
-function getMaterialFromSku(
-  sku: string | undefined,
-  rules: MaterialRule[],
-): {
-  prefix: string | null;
-  materialName: string;
-  truckCapacity: number;
-} {
-  const normalizedSku = normalizeSku(sku);
-  const match = normalizedSku.match(/^(\d{3})/);
-  const prefix = match ? match[1] : null;
-
-  if (!prefix) {
-    return {
-      prefix: null,
-      materialName: "Material",
-      truckCapacity: DEFAULT_MAX_QTY_PER_TRUCK,
-    };
-  }
+function getMaterialFromSku(sku: string | undefined, rules: MaterialRule[]) {
+  const prefix = sku?.match(/^(\d{3})/)?.[1];
 
   const rule = rules.find((r) => r.prefix === prefix);
 
-  if (!rule) {
-    return {
-      prefix,
-      materialName: "Material",
-      truckCapacity: DEFAULT_MAX_QTY_PER_TRUCK,
-    };
-  }
-
   return {
-    prefix,
-    materialName: rule.material_name,
-    truckCapacity: Number(rule.truck_capacity) || DEFAULT_MAX_QTY_PER_TRUCK,
+    materialName: rule?.material_name || "Material",
+    truckCapacity: rule?.truck_capacity || DEFAULT_MAX_QTY_PER_TRUCK,
   };
 }
 
-function buildServiceName(materialNames: string[], totalTrucks: number): string {
-  const uniqueMaterials = Array.from(new Set(materialNames))
-    .map((name) => (name || "").trim())
-    .filter(Boolean);
+function buildServiceName(materials: string[], trucks: number) {
+  const unique = [...new Set(materials)];
 
-  let baseName = "Green Hills Delivery";
+  let base = "Delivery";
 
-  if (uniqueMaterials.length === 1) {
-    baseName = `${uniqueMaterials[0]} Delivery`;
-  } else if (uniqueMaterials.length > 1) {
-    baseName = "Bulk Material Delivery";
-  }
+  if (unique.length === 1) base = `${unique[0]} Delivery`;
+  else if (unique.length > 1) base = "Bulk Material Delivery";
 
-  if (totalTrucks > 1) {
-    return `${baseName} (${totalTrucks} Loads)`;
-  }
-
-  return baseName;
+  return trucks > 1 ? `${base} (${trucks} Loads)` : base;
 }
 
-function buildServiceDescription(totalTrucks: number, vendorText: string): string {
-  const baseDescription =
-    totalTrucks > 1
-      ? `${totalTrucks} truck loads required for this order`
-      : "Standard delivery pricing";
-
-  return `${baseDescription}${vendorText ? vendorText : ""}`;
+function buildDescription(trucks: number) {
+  return trucks > 1
+    ? `${trucks} truck loads required`
+    : "Standard delivery pricing";
 }
 
-async function getDriveTimeCost(
-  originAddress: string,
-  destinationAddress: string,
-  googleMapsApiKey: string,
-): Promise<{
-  costDollars: number;
-  oneWayMiles: number;
-  durationText: string;
-  roundTripMinutes: number;
-} | null> {
-  const mapsUrl = new URL("https://maps.googleapis.com/maps/api/distancematrix/json");
-  mapsUrl.searchParams.set("origins", originAddress);
-  mapsUrl.searchParams.set("destinations", destinationAddress);
-  mapsUrl.searchParams.set("key", googleMapsApiKey);
-  mapsUrl.searchParams.set("units", "imperial");
+/* ---------------- DISTANCE ---------------- */
 
-  const mapsRes = await fetch(mapsUrl.toString());
-  const mapsData = await mapsRes.json();
+async function getDriveTimeCost(origin: string, dest: string, key: string) {
+  const cacheKey = `${origin}|${dest}`;
+  const cached = getCache(distanceCache.get(cacheKey) || null);
+  if (cached) return cached;
 
-  if (mapsData.status !== "OK") return null;
+  const url = new URL("https://maps.googleapis.com/maps/api/distancematrix/json");
+  url.searchParams.set("origins", origin);
+  url.searchParams.set("destinations", dest);
+  url.searchParams.set("key", key);
 
-  const element = mapsData.rows?.[0]?.elements?.[0];
-  if (!element || element.status !== "OK") return null;
+  const res = await fetch(url.toString());
+  const json = await res.json();
 
-  const oneWaySeconds = element.duration.value;
-  const roundTripMinutes = (oneWaySeconds * 2) / 60;
-  const costDollars = roundTripMinutes * RATE_PER_MINUTE;
-  const oneWayMiles = Math.round((element.distance.value / 1609.34) * 10) / 10;
+  const el = json.rows?.[0]?.elements?.[0];
+  if (!el || el.status !== "OK") return null;
 
-  return {
-    costDollars,
-    oneWayMiles,
-    durationText: element.duration.text,
-    roundTripMinutes,
+  const minutes = (el.duration.value * 2) / 60;
+  const miles = el.distance.value / 1609.34;
+
+  const result = {
+    costDollars: minutes * RATE_PER_MINUTE,
+    oneWayMiles: Math.round(miles * 10) / 10,
   };
+
+  distanceCache.set(cacheKey, setCache(result, TTL_LONG));
+
+  return result;
 }
+
+/* ---------------- MAIN ---------------- */
 
 export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   const settings = await getAppSettings(input.shop);
@@ -230,192 +201,101 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
       serviceName: "Delivery Unavailable",
       serviceCode: "CUSTOM_DELIVERY",
       cents: 0,
-      description: "Calculated delivery rates are currently disabled",
-      eta: "Unavailable",
-      summary: "Calculated delivery rates are currently disabled",
+      description: "Disabled",
+      eta: "N/A",
+      summary: "Disabled",
     };
   }
 
-  if (settings.useTestFlatRate) {
-    return {
-      serviceName: "Test Delivery Rate",
-      serviceCode: "CUSTOM_DELIVERY",
-      cents: settings.testFlatRateCents,
-      description: "Test flat rate enabled",
-      eta: "2–4 business days",
-      summary: `Test flat rate: $${(settings.testFlatRateCents / 100).toFixed(2)}`,
-    };
-  }
-
-  const destinationParts = [
+  const dest = [
     input.address1,
-    input.address2,
     input.city,
     input.province,
     input.postalCode,
-    input.country,
-  ].filter(Boolean);
+  ]
+    .filter(Boolean)
+    .join(", ");
 
-  const destinationAddress = destinationParts.join(", ");
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) throw new Error("Missing Google API key");
 
-  if (!destinationAddress) {
-    return {
-      serviceName: "Delivery Unavailable",
-      serviceCode: "CUSTOM_DELIVERY",
-      cents: 0,
-      description: "Missing destination address",
-      eta: "Unavailable",
-      summary: "Missing destination address",
-    };
-  }
-
-  const googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY;
-  if (!googleMapsApiKey) {
-    return {
-      serviceName: "Delivery Unavailable",
-      serviceCode: "CUSTOM_DELIVERY",
-      cents: 0,
-      description: "Google Maps API key is not configured",
-      eta: "Unavailable",
-      summary: "Google Maps API key is not configured",
-    };
-  }
-
-  const materialRules = await getMaterialRules();
+  const rules = await getMaterialRules();
   const defaultOrigin = await getActiveOriginAddress();
-  const shippableItems = input.items.filter((item) => item.requiresShipping !== false);
 
-  const routeCache: Record<
-    string,
-    {
-      costDollars: number;
-      oneWayMiles: number;
-      durationText: string;
-      roundTripMinutes: number;
-    }
-  > = {};
+  /* -------- GROUP ITEMS -------- */
 
-  let totalDeliveryCostCents = 0;
-  let totalTrucks = 0;
-  let maxOneWayMiles = 0;
-
-  const vendorLabels: string[] = [];
+  const groups: Record<string, any> = {};
   const materialLabels: string[] = [];
 
-  for (const item of shippableItems) {
-    const itemQty = item.quantity || 1;
+  for (const item of input.items) {
+    if (item.requiresShipping === false) continue;
 
-    const {
-      prefix,
-      materialName,
-      truckCapacity,
-    } = getMaterialFromSku(item.sku, materialRules);
-
+    const { materialName, truckCapacity } = getMaterialFromSku(item.sku, rules);
     materialLabels.push(materialName);
 
-    const trucksForItem = Math.max(1, Math.ceil(itemQty / truckCapacity));
+    const key = `${materialName}-${truckCapacity}-${item.productVendor || "default"}`;
 
-    let origin = defaultOrigin;
-
-    if (item.productVendor) {
-      const vendorOrigin = await getOriginFromVendor(item.productVendor);
-      if (vendorOrigin) {
-        origin = vendorOrigin;
-        if (settings.showVendorSource) {
-          vendorLabels.push(item.productVendor);
-        }
-      }
+    if (!groups[key]) {
+      groups[key] = {
+        qty: 0,
+        truckCapacity,
+        materialName,
+        vendor: item.productVendor,
+      };
     }
 
-    const cacheKey = `${origin.address}|${destinationAddress}`;
-    let routeCost = routeCache[cacheKey];
+    groups[key].qty += item.quantity || 0;
+  }
 
-    if (!routeCost) {
-      const result = await getDriveTimeCost(
-        origin.address,
-        destinationAddress,
-        googleMapsApiKey,
-      );
+  let totalCost = 0;
+  let totalTrucks = 0;
+  let maxMiles = 0;
 
-      if (!result) continue;
+  for (const g of Object.values(groups)) {
+    const trucks = Math.max(1, Math.ceil(g.qty / g.truckCapacity));
 
-      routeCache[cacheKey] = result;
-      routeCost = result;
-    }
+    const origin =
+      (await getOriginFromVendor(g.vendor)) || defaultOrigin;
 
-    if (routeCost.oneWayMiles > maxOneWayMiles) {
-      maxOneWayMiles = routeCost.oneWayMiles;
-    }
+    const route = await getDriveTimeCost(origin.address, dest, apiKey);
+    if (!route) continue;
 
-    let itemCostDollars = routeCost.costDollars * trucksForItem;
+    totalCost += route.costDollars * trucks;
+    totalTrucks += trucks;
 
-    if (settings.enableRemoteSurcharge && input.postalCode.startsWith("9")) {
-      itemCostDollars += 3;
-    }
-
-    totalDeliveryCostCents += Math.round(itemCostDollars * 100);
-    totalTrucks += trucksForItem;
-
-    if (settings.enableDebugLogging) {
-      console.log(
-        `[QUOTE] material=${materialName} prefix=${prefix || "none"} sku=${item.sku || "none"} qty=${itemQty} capacity=${truckCapacity} trucks=${trucksForItem} miles=${routeCost.oneWayMiles} cost=${itemCostDollars.toFixed(2)}`,
-      );
+    if (route.oneWayMiles > maxMiles) {
+      maxMiles = route.oneWayMiles;
     }
   }
 
-  if (totalTrucks === 0) {
-    const fallback = await getDriveTimeCost(
-      defaultOrigin.address,
-      destinationAddress,
-      googleMapsApiKey,
-    );
+  /* -------- OUTSIDE RADIUS -------- */
 
-    if (fallback) {
-      maxOneWayMiles = fallback.oneWayMiles;
-
-      let fallbackDollars = fallback.costDollars;
-      if (settings.enableRemoteSurcharge && input.postalCode.startsWith("9")) {
-        fallbackDollars += 3;
-      }
-
-      totalDeliveryCostCents = Math.round(fallbackDollars * 100);
-      totalTrucks = 1;
-    }
-  }
-
-  if (maxOneWayMiles > MAX_DELIVERY_RADIUS_MILES) {
+  if (maxMiles > MAX_DELIVERY_RADIUS_MILES) {
     return {
       serviceName: "Call for delivery quote",
       serviceCode: "CALL_FOR_QUOTE",
       cents: 1,
-      description: "Outside delivery area — please call for custom quote",
-      eta: "Same business day",
-      summary: "Custom delivery quote required",
+      description: "Outside delivery area",
+      eta: "Same day",
+      summary: "Call required",
       outsideDeliveryArea: true,
-      outsideDeliveryMiles: maxOneWayMiles,
+      outsideDeliveryMiles: maxMiles,
       outsideDeliveryRadius: MAX_DELIVERY_RADIUS_MILES,
       outsideDeliveryPhone: OUTSIDE_RADIUS_PHONE,
     };
   }
 
-  const uniqueVendors = Array.from(new Set(vendorLabels)).filter(Boolean);
-  const vendorText =
-    settings.showVendorSource && uniqueVendors.length > 0
-      ? ` Vendor source: ${uniqueVendors.join(", ")}.`
-      : "";
-
-  const serviceName = buildServiceName(materialLabels, totalTrucks);
-  const description = buildServiceDescription(totalTrucks, vendorText);
+  /* -------- FINAL -------- */
 
   return {
-    serviceName,
+    serviceName: buildServiceName(materialLabels, totalTrucks),
     serviceCode: "CUSTOM_DELIVERY",
-    cents: totalDeliveryCostCents,
-    description,
+    cents: Math.round(totalCost * 100),
+    description: buildDescription(totalTrucks),
     eta: "2–4 business days",
-    summary: `Shipping: $${(totalDeliveryCostCents / 100).toFixed(2)}`,
+    summary: `Shipping: $${totalCost.toFixed(2)}`,
     outsideDeliveryArea: false,
-    outsideDeliveryMiles: maxOneWayMiles,
+    outsideDeliveryMiles: maxMiles,
     outsideDeliveryRadius: MAX_DELIVERY_RADIUS_MILES,
     outsideDeliveryPhone: OUTSIDE_RADIUS_PHONE,
   };
