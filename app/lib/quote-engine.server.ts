@@ -134,7 +134,7 @@ function getMaterialFromSku(
   if (!prefix) {
     return {
       prefix: null,
-      materialName: "Default",
+      materialName: "Material",
       truckCapacity: DEFAULT_MAX_QTY_PER_TRUCK,
     };
   }
@@ -144,7 +144,7 @@ function getMaterialFromSku(
   if (!rule) {
     return {
       prefix,
-      materialName: "Default",
+      materialName: "Material",
       truckCapacity: DEFAULT_MAX_QTY_PER_TRUCK,
     };
   }
@@ -154,6 +154,35 @@ function getMaterialFromSku(
     materialName: rule.material_name,
     truckCapacity: Number(rule.truck_capacity) || DEFAULT_MAX_QTY_PER_TRUCK,
   };
+}
+
+function buildServiceName(materialNames: string[], totalTrucks: number): string {
+  const uniqueMaterials = Array.from(new Set(materialNames))
+    .map((name) => (name || "").trim())
+    .filter(Boolean);
+
+  let baseName = "Green Hills Delivery";
+
+  if (uniqueMaterials.length === 1) {
+    baseName = `${uniqueMaterials[0]} Delivery`;
+  } else if (uniqueMaterials.length > 1) {
+    baseName = "Bulk Material Delivery";
+  }
+
+  if (totalTrucks > 1) {
+    return `${baseName} (${totalTrucks} Loads)`;
+  }
+
+  return baseName;
+}
+
+function buildServiceDescription(totalTrucks: number, vendorText: string): string {
+  const baseDescription =
+    totalTrucks > 1
+      ? `${totalTrucks} truck loads required for this order`
+      : "Standard delivery pricing";
+
+  return `${baseDescription}${vendorText ? vendorText : ""}`;
 }
 
 async function getDriveTimeCost(
@@ -198,7 +227,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
   if (!settings.enableCalculatedRates) {
     return {
-      serviceName: "Custom Delivery",
+      serviceName: "Delivery Unavailable",
       serviceCode: "CUSTOM_DELIVERY",
       cents: 0,
       description: "Calculated delivery rates are currently disabled",
@@ -209,7 +238,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
   if (settings.useTestFlatRate) {
     return {
-      serviceName: "Custom Delivery",
+      serviceName: "Test Delivery Rate",
       serviceCode: "CUSTOM_DELIVERY",
       cents: settings.testFlatRateCents,
       description: "Test flat rate enabled",
@@ -231,7 +260,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
   if (!destinationAddress) {
     return {
-      serviceName: "Custom Delivery",
+      serviceName: "Delivery Unavailable",
       serviceCode: "CUSTOM_DELIVERY",
       cents: 0,
       description: "Missing destination address",
@@ -243,7 +272,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   const googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY;
   if (!googleMapsApiKey) {
     return {
-      serviceName: "Custom Delivery",
+      serviceName: "Delivery Unavailable",
       serviceCode: "CUSTOM_DELIVERY",
       cents: 0,
       description: "Google Maps API key is not configured",
@@ -268,8 +297,10 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
   let totalDeliveryCostCents = 0;
   let totalTrucks = 0;
-  const vendorLabels: string[] = [];
   let maxOneWayMiles = 0;
+
+  const vendorLabels: string[] = [];
+  const materialLabels: string[] = [];
 
   for (const item of shippableItems) {
     const itemQty = item.quantity || 1;
@@ -279,6 +310,8 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
       materialName,
       truckCapacity,
     } = getMaterialFromSku(item.sku, materialRules);
+
+    materialLabels.push(materialName);
 
     const trucksForItem = Math.max(1, Math.ceil(itemQty / truckCapacity));
 
@@ -371,16 +404,16 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
       ? ` Vendor source: ${uniqueVendors.join(", ")}.`
       : "";
 
+  const serviceName = buildServiceName(materialLabels, totalTrucks);
+  const description = buildServiceDescription(totalTrucks, vendorText);
+
   return {
-    serviceName: "Green Hills Delivery Fee",
+    serviceName,
     serviceCode: "CUSTOM_DELIVERY",
     cents: totalDeliveryCostCents,
-    description:
-      totalTrucks > 1
-        ? `Delivery (${totalTrucks} loads required).${vendorText}`
-        : `Standard delivery pricing.${vendorText}`,
+    description,
     eta: "2–4 business days",
-    summary: `Shipping calculated from your address: $${(totalDeliveryCostCents / 100).toFixed(2)}`,
+    summary: `Shipping: $${(totalDeliveryCostCents / 100).toFixed(2)}`,
     outsideDeliveryArea: false,
     outsideDeliveryMiles: maxOneWayMiles,
     outsideDeliveryRadius: MAX_DELIVERY_RADIUS_MILES,
