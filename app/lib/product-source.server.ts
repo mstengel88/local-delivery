@@ -18,35 +18,39 @@ export async function getPickupVendorMapForSkus(
     return {};
   }
 
-  const { admin } = await shopify.unauthenticated.admin(shop);
-
   const result: VariantPickupVendorMap = {};
 
-  for (const sku of uniqueSkus) {
-    const query = `
-      query VariantBySku {
-        productVariants(first: 1, query: "sku:${escapeGraphQLString(sku)}") {
-          nodes {
-            sku
-            product {
-              metafield(namespace: "shipping", key: "pickup_vendor") {
-                value
+  try {
+    const client = await shopify.unauthenticated.admin(shop);
+
+    for (const sku of uniqueSkus) {
+      const query = `
+        query VariantBySku {
+          productVariants(first: 1, query: "sku:${escapeGraphQLString(sku)}") {
+            nodes {
+              sku
+              product {
+                metafield(namespace: "shipping", key: "pickup_vendor") {
+                  value
+                }
               }
             }
           }
         }
+      `;
+
+      const response = await client.admin.graphql(query);
+      const json = await response.json();
+
+      const node = json?.data?.productVariants?.nodes?.[0];
+      const pickupVendor = node?.product?.metafield?.value || "";
+
+      if (node?.sku) {
+        result[node.sku] = pickupVendor;
       }
-    `;
-
-    const response = await admin.graphql(query);
-    const json = await response.json();
-
-    const node = json?.data?.productVariants?.nodes?.[0];
-    const pickupVendor = node?.product?.metafield?.value || "";
-
-    if (node?.sku) {
-      result[node.sku] = pickupVendor;
     }
+  } catch (error) {
+    console.error("[PICKUP VENDOR LOOKUP ERROR]", error);
   }
 
   return result;

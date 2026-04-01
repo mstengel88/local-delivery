@@ -11,7 +11,41 @@ type AppSettingsRow = {
   updated_at?: string;
 };
 
-export async function getAppSettings(shop: string) {
+export type AppSettings = {
+  shop: string;
+  useTestFlatRate: boolean;
+  testFlatRateCents: number;
+  enableCalculatedRates: boolean;
+  enableRemoteSurcharge: boolean;
+  enableDebugLogging: boolean;
+  showVendorSource: boolean;
+};
+
+const DEFAULT_APP_SETTINGS: Omit<AppSettings, "shop"> = {
+  useTestFlatRate: false,
+  testFlatRateCents: 5000,
+  enableCalculatedRates: true,
+  enableRemoteSurcharge: true,
+  enableDebugLogging: false,
+  showVendorSource: true,
+};
+
+function mapRowToSettings(row: Partial<AppSettingsRow> | null, shop: string): AppSettings {
+  return {
+    shop,
+    useTestFlatRate: row?.use_test_flat_rate ?? DEFAULT_APP_SETTINGS.useTestFlatRate,
+    testFlatRateCents: row?.test_flat_rate_cents ?? DEFAULT_APP_SETTINGS.testFlatRateCents,
+    enableCalculatedRates:
+      row?.enable_calculated_rates ?? DEFAULT_APP_SETTINGS.enableCalculatedRates,
+    enableRemoteSurcharge:
+      row?.enable_remote_surcharge ?? DEFAULT_APP_SETTINGS.enableRemoteSurcharge,
+    enableDebugLogging:
+      row?.enable_debug_logging ?? DEFAULT_APP_SETTINGS.enableDebugLogging,
+    showVendorSource: row?.show_vendor_source ?? DEFAULT_APP_SETTINGS.showVendorSource,
+  };
+}
+
+export async function getAppSettings(shop: string): Promise<AppSettings> {
   const { data, error } = await supabaseAdmin
     .from("shopify_app_settings")
     .select("*")
@@ -19,43 +53,20 @@ export async function getAppSettings(shop: string) {
     .maybeSingle();
 
   if (error) {
-    throw error;
-  }
-
-  if (!data) {
+    console.error("[GET APP SETTINGS ERROR]", error);
     return {
       shop,
-      useTestFlatRate: false,
-      testFlatRateCents: 5000,
-      enableCalculatedRates: true,
-      enableRemoteSurcharge: true,
-      enableDebugLogging: false,
-      showVendorSource: true,
+      ...DEFAULT_APP_SETTINGS,
     };
   }
 
-  return {
-    shop: data.shop,
-    useTestFlatRate: data.use_test_flat_rate,
-    testFlatRateCents: data.test_flat_rate_cents,
-    enableCalculatedRates: data.enable_calculated_rates,
-    enableRemoteSurcharge: data.enable_remote_surcharge,
-    enableDebugLogging: data.enable_debug_logging,
-    showVendorSource: data.show_vendor_source,
-  };
+  return mapRowToSettings(data, shop);
 }
 
 export async function saveAppSettings(
   shop: string,
-  values: {
-    useTestFlatRate: boolean;
-    testFlatRateCents: number;
-    enableCalculatedRates: boolean;
-    enableRemoteSurcharge: boolean;
-    enableDebugLogging: boolean;
-    showVendorSource: boolean;
-  },
-) {
+  values: Omit<AppSettings, "shop">,
+): Promise<AppSettings> {
   const payload: AppSettingsRow = {
     shop,
     use_test_flat_rate: values.useTestFlatRate,
@@ -70,7 +81,7 @@ export async function saveAppSettings(
   const { data, error } = await supabaseAdmin
     .from("shopify_app_settings")
     .upsert(payload, { onConflict: "shop" })
-    .select()
+    .select("*")
     .single();
 
   if (error) {
@@ -78,5 +89,5 @@ export async function saveAppSettings(
     throw error;
   }
 
-  return data;
+  return mapRowToSettings(data, shop);
 }

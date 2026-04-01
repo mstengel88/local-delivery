@@ -1,12 +1,18 @@
-import { Form, useActionData, useLoaderData } from "react-router";
+import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import {
   data,
-  type LoaderFunctionArgs,
   type ActionFunctionArgs,
+  type LoaderFunctionArgs,
 } from "react-router";
 import { authenticate } from "../shopify.server";
 import { registerCarrierService } from "../lib/register-carrier.server";
-import { getAppSettings, saveAppSettings } from "../lib/app-settings.server";
+import { getAppSettings, saveAppSettings, type AppSettings } from "../lib/app-settings.server";
+
+type ActionData = {
+  ok: boolean;
+  message: string;
+  settings?: AppSettings;
+};
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
@@ -22,7 +28,7 @@ export async function action({ request }: ActionFunctionArgs) {
   const form = await request.formData();
 
   try {
-    const saved = await saveAppSettings(session.shop, {
+    const savedSettings = await saveAppSettings(session.shop, {
       useTestFlatRate: form.get("useTestFlatRate") === "on",
       testFlatRateCents: Number(form.get("testFlatRateCents") || 5000),
       enableCalculatedRates: form.get("enableCalculatedRates") === "on",
@@ -31,15 +37,15 @@ export async function action({ request }: ActionFunctionArgs) {
       showVendorSource: form.get("showVendorSource") === "on",
     });
 
-    return data({
+    return data<ActionData>({
       ok: true,
       message: "Settings saved successfully.",
-      saved,
+      settings: savedSettings,
     });
   } catch (error: any) {
     console.error("[APP SETTINGS ACTION ERROR]", error);
 
-    return data(
+    return data<ActionData>(
       {
         ok: false,
         message: error?.message || "Failed to save settings.",
@@ -50,10 +56,12 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function AppIndex() {
-  const { settings } = useLoaderData() as any;
-  const actionData = useActionData() as
-    | { ok?: boolean; message?: string }
-    | undefined;
+  const loaderData = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
+  const navigation = useNavigation();
+
+  const settings = actionData?.settings ?? loaderData.settings;
+  const isSaving = navigation.state === "submitting";
 
   return (
     <div style={{ padding: 30, maxWidth: 800 }}>
@@ -71,6 +79,7 @@ export default function AppIndex() {
             border: "1px solid",
             borderColor: actionData.ok ? "#16a34a" : "#dc2626",
             background: actionData.ok ? "#f0fdf4" : "#fef2f2",
+            color: "#111827",
           }}
         >
           {actionData.message}
@@ -133,23 +142,24 @@ export default function AppIndex() {
               name="showVendorSource"
               defaultChecked={settings.showVendorSource}
             />{" "}
-            Show vendor source pulled from product
+            Show vendor source on checkout
           </label>
 
           <button
             type="submit"
+            disabled={isSaving}
             style={{
               marginTop: 10,
               padding: "10px 16px",
-              background: "#111",
+              background: isSaving ? "#6b7280" : "#111",
               color: "#fff",
               borderRadius: 6,
               border: "none",
-              cursor: "pointer",
+              cursor: isSaving ? "default" : "pointer",
               width: 180,
             }}
           >
-            Save Settings
+            {isSaving ? "Saving..." : "Save Settings"}
           </button>
         </div>
       </Form>
