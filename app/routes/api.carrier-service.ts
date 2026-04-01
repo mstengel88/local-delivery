@@ -1,7 +1,6 @@
 import type { ActionFunctionArgs } from "react-router";
 import { data } from "react-router";
 import { getQuote } from "../lib/quote-engine.server";
-import { getPickupVendorMapForVariantIds } from "../lib/product-source.server";
 
 export async function action({ request }: ActionFunctionArgs) {
   const body = await request.json();
@@ -9,25 +8,11 @@ export async function action({ request }: ActionFunctionArgs) {
   const destination = rate.destination ?? {};
   const items = Array.isArray(rate.items) ? rate.items : [];
 
-  console.log("[CARRIER RAW BODY]", JSON.stringify(body, null, 2));
-
   const shop =
     body?.shop ||
     request.headers.get("x-shopify-shop-domain") ||
     process.env.SHOPIFY_STORE_DOMAIN ||
     "";
-
-  const variantIds = items
-    .map((item: any) => item.variant_id)
-    .filter(Boolean)
-    .map((id: any) => String(id));
-
-  const pickupVendorByVariant =
-    variantIds.length > 0
-      ? await getPickupVendorMapForVariantIds(shop, variantIds)
-      : {};
-
-  console.log("[PICKUP VENDOR BY VARIANT]", pickupVendorByVariant);
 
   const mappedItems = items.map((item: any) => ({
     sku: item.sku,
@@ -35,10 +20,7 @@ export async function action({ request }: ActionFunctionArgs) {
     grams: item.grams ?? 0,
     price: item.price ?? 0,
     requiresShipping: item.requires_shipping !== false,
-    pickupVendor:
-      item.vendor ||
-      item.product_vendor ||
-      (item.variant_id ? pickupVendorByVariant[String(item.variant_id)] || "" : ""),
+    pickupVendor: item.vendor || item.product_vendor || "",
   }));
 
   console.log("[MAPPED ITEMS]", JSON.stringify(mappedItems, null, 2));
