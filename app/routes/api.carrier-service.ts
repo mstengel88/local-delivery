@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs } from "react-router";
 import { data } from "react-router";
 import { getQuote } from "../lib/quote-engine.server";
+import { getPickupVendorMapForSkus } from "../lib/product-source.server";
 
 export async function action({ request }: ActionFunctionArgs) {
   const body = await request.json();
@@ -14,13 +15,19 @@ export async function action({ request }: ActionFunctionArgs) {
     process.env.SHOPIFY_STORE_DOMAIN ||
     "";
 
+  const skus = items
+    .map((item: any) => item.sku)
+    .filter((sku: string | undefined) => Boolean(sku));
+
+  const pickupVendorBySku = await getPickupVendorMapForSkus(shop, skus);
+
   const mappedItems = items.map((item: any) => ({
     sku: item.sku,
     quantity: item.quantity ?? 0,
     grams: item.grams ?? 0,
     price: item.price ?? 0,
     requiresShipping: item.requires_shipping !== false,
-    productVendor: item.vendor || item.product_vendor || "",
+    pickupVendor: item.sku ? pickupVendorBySku[item.sku] || "" : "",
   }));
 
   const quote = await getQuote({

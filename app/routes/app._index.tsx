@@ -1,11 +1,9 @@
-import { Form, useLoaderData } from "react-router";
+import { Form, useActionData, useLoaderData } from "react-router";
 import {
   data,
-  redirect,
   type LoaderFunctionArgs,
   type ActionFunctionArgs,
 } from "react-router";
-
 import { authenticate } from "../shopify.server";
 import { registerCarrierService } from "../lib/register-carrier.server";
 import { getAppSettings, saveAppSettings } from "../lib/app-settings.server";
@@ -13,34 +11,49 @@ import { getAppSettings, saveAppSettings } from "../lib/app-settings.server";
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
 
-  // Ensure carrier service exists
-  const carrierResult = await registerCarrierService(admin);
-
-  // Load admin settings
+  await registerCarrierService(admin);
   const settings = await getAppSettings(session.shop);
 
-  return data({ settings, carrierResult });
+  return data({ settings });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
   const { session } = await authenticate.admin(request);
-
   const form = await request.formData();
 
-  await saveAppSettings(session.shop, {
-    useTestFlatRate: form.get("useTestFlatRate") === "on",
-    testFlatRateCents: Number(form.get("testFlatRateCents") || 5000),
-    enableCalculatedRates: form.get("enableCalculatedRates") === "on",
-    enableRemoteSurcharge: form.get("enableRemoteSurcharge") === "on",
-    enableDebugLogging: form.get("enableDebugLogging") === "on",
-    showVendorSource: form.get("showVendorSource") === "on",
-  });
+  try {
+    const saved = await saveAppSettings(session.shop, {
+      useTestFlatRate: form.get("useTestFlatRate") === "on",
+      testFlatRateCents: Number(form.get("testFlatRateCents") || 5000),
+      enableCalculatedRates: form.get("enableCalculatedRates") === "on",
+      enableRemoteSurcharge: form.get("enableRemoteSurcharge") === "on",
+      enableDebugLogging: form.get("enableDebugLogging") === "on",
+      showVendorSource: form.get("showVendorSource") === "on",
+    });
 
-  return redirect("/app");
+    return data({
+      ok: true,
+      message: "Settings saved successfully.",
+      saved,
+    });
+  } catch (error: any) {
+    console.error("[APP SETTINGS ACTION ERROR]", error);
+
+    return data(
+      {
+        ok: false,
+        message: error?.message || "Failed to save settings.",
+      },
+      { status: 500 },
+    );
+  }
 }
 
 export default function AppIndex() {
-  const { settings, carrierResult } = useLoaderData() as any;
+  const { settings } = useLoaderData() as any;
+  const actionData = useActionData() as
+    | { ok?: boolean; message?: string }
+    | undefined;
 
   return (
     <div style={{ padding: 30, maxWidth: 800 }}>
@@ -49,29 +62,20 @@ export default function AppIndex() {
         Manage shipping behavior for testing and live checkout.
       </p>
 
-      {/* Carrier status panel */}
-      <div
-        style={{
-          marginBottom: 30,
-          padding: 14,
-          borderRadius: 8,
-          border: "1px solid #ddd",
-          background: carrierResult?.ok ? "#f6fff6" : "#fff6f6",
-        }}
-      >
-        <div>
-          <strong>Carrier status:</strong>{" "}
-          {carrierResult?.ok ? "OK" : "Error"}
+      {actionData?.message ? (
+        <div
+          style={{
+            marginBottom: 20,
+            padding: "12px 14px",
+            borderRadius: 8,
+            border: "1px solid",
+            borderColor: actionData.ok ? "#16a34a" : "#dc2626",
+            background: actionData.ok ? "#f0fdf4" : "#fef2f2",
+          }}
+        >
+          {actionData.message}
         </div>
-
-        <div>
-          <strong>Step:</strong> {carrierResult?.step}
-        </div>
-
-        <div>
-          <strong>Message:</strong> {carrierResult?.message}
-        </div>
-      </div>
+      ) : null}
 
       <Form method="post">
         <div style={{ display: "grid", gap: 18 }}>
@@ -90,7 +94,7 @@ export default function AppIndex() {
               name="useTestFlatRate"
               defaultChecked={settings.useTestFlatRate}
             />{" "}
-            Use test flat rate (for checkout testing)
+            Use test flat rate
           </label>
 
           <label>

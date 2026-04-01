@@ -1,52 +1,47 @@
 import { supabaseAdmin } from "./supabase.server";
 
+type AppSettingsRow = {
+  shop: string;
+  use_test_flat_rate: boolean;
+  test_flat_rate_cents: number;
+  enable_calculated_rates: boolean;
+  enable_remote_surcharge: boolean;
+  enable_debug_logging: boolean;
+  show_vendor_source: boolean;
+  updated_at?: string;
+};
+
 export async function getAppSettings(shop: string) {
   const { data, error } = await supabaseAdmin
     .from("shopify_app_settings")
     .select("*")
     .eq("shop", shop)
-    .single();
+    .maybeSingle();
 
-  if (data) {
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
     return {
-      shop: data.shop,
-      useTestFlatRate: data.use_test_flat_rate,
-      testFlatRateCents: data.test_flat_rate_cents,
-      enableCalculatedRates: data.enable_calculated_rates,
-      enableRemoteSurcharge: data.enable_remote_surcharge,
-      enableDebugLogging: data.enable_debug_logging,
-      showVendorSource: data.show_vendor_source,
+      shop,
+      useTestFlatRate: false,
+      testFlatRateCents: 5000,
+      enableCalculatedRates: true,
+      enableRemoteSurcharge: true,
+      enableDebugLogging: false,
+      showVendorSource: true,
     };
   }
 
-  const defaults = {
-    shop,
-    use_test_flat_rate: false,
-    test_flat_rate_cents: 5000,
-    enable_calculated_rates: true,
-    enable_remote_surcharge: true,
-    enable_debug_logging: false,
-    show_vendor_source: true,
-  };
-
-  const { data: inserted, error: insertError } = await supabaseAdmin
-    .from("shopify_app_settings")
-    .insert(defaults)
-    .select()
-    .single();
-
-  if (insertError) {
-    throw insertError;
-  }
-
   return {
-    shop: inserted.shop,
-    useTestFlatRate: inserted.use_test_flat_rate,
-    testFlatRateCents: inserted.test_flat_rate_cents,
-    enableCalculatedRates: inserted.enable_calculated_rates,
-    enableRemoteSurcharge: inserted.enable_remote_surcharge,
-    enableDebugLogging: inserted.enable_debug_logging,
-    showVendorSource: inserted.show_vendor_source,
+    shop: data.shop,
+    useTestFlatRate: data.use_test_flat_rate,
+    testFlatRateCents: data.test_flat_rate_cents,
+    enableCalculatedRates: data.enable_calculated_rates,
+    enableRemoteSurcharge: data.enable_remote_surcharge,
+    enableDebugLogging: data.enable_debug_logging,
+    showVendorSource: data.show_vendor_source,
   };
 }
 
@@ -59,9 +54,9 @@ export async function saveAppSettings(
     enableRemoteSurcharge: boolean;
     enableDebugLogging: boolean;
     showVendorSource: boolean;
-  }
+  },
 ) {
-  const payload = {
+  const payload: AppSettingsRow = {
     shop,
     use_test_flat_rate: values.useTestFlatRate,
     test_flat_rate_cents: values.testFlatRateCents,
@@ -69,15 +64,17 @@ export async function saveAppSettings(
     enable_remote_surcharge: values.enableRemoteSurcharge,
     enable_debug_logging: values.enableDebugLogging,
     show_vendor_source: values.showVendorSource,
+    updated_at: new Date().toISOString(),
   };
 
   const { data, error } = await supabaseAdmin
     .from("shopify_app_settings")
-    .upsert(payload)
+    .upsert(payload, { onConflict: "shop" })
     .select()
     .single();
 
   if (error) {
+    console.error("[SAVE APP SETTINGS ERROR]", error);
     throw error;
   }
 
