@@ -1,13 +1,15 @@
 import type { ActionFunctionArgs } from "react-router";
 import { data } from "react-router";
 import { getQuote } from "../lib/quote-engine.server";
-import { getPickupVendorMapForSkus } from "../lib/product-source.server";
+import { getPickupVendorMapForVariantIds } from "../lib/product-source.server";
 
 export async function action({ request }: ActionFunctionArgs) {
   const body = await request.json();
   const rate = body?.rate ?? {};
   const destination = rate.destination ?? {};
   const items = Array.isArray(rate.items) ? rate.items : [];
+
+  console.log("[CARRIER RAW BODY]", JSON.stringify(body, null, 2));
 
   const shop =
     body?.shop ||
@@ -16,22 +18,30 @@ export async function action({ request }: ActionFunctionArgs) {
     "";
 
   const variantIds = items
-  .map((item: any) => item.variant_id)
-  .filter(Boolean);
+    .map((item: any) => item.variant_id)
+    .filter(Boolean);
 
-  const pickupVendorByVariant = await getPickupVendorMapForVariantIds(
-  shop,
-  variantIds,
-);
+  console.log("[CARRIER VARIANT IDS]", variantIds);
+
+  const pickupVendorByVariant =
+    variantIds.length > 0
+      ? await getPickupVendorMapForVariantIds(shop, variantIds)
+      : {};
+
+  console.log("[PICKUP VENDOR BY VARIANT]", pickupVendorByVariant);
 
   const mappedItems = items.map((item: any) => ({
-  sku: item.sku,
-  quantity: item.quantity ?? 0,
-  requiresShipping: item.requires_shipping !== false,
-  pickupVendor: item.variant_id
-    ? pickupVendorByVariant[item.variant_id] || ""
-    : "",
-}));
+    sku: item.sku,
+    quantity: item.quantity ?? 0,
+    grams: item.grams ?? 0,
+    price: item.price ?? 0,
+    requiresShipping: item.requires_shipping !== false,
+    pickupVendor: item.variant_id
+      ? pickupVendorByVariant[item.variant_id] || ""
+      : "",
+  }));
+
+  console.log("[MAPPED ITEMS]", JSON.stringify(mappedItems, null, 2));
 
   const quote = await getQuote({
     shop,
@@ -43,6 +53,8 @@ export async function action({ request }: ActionFunctionArgs) {
     address2: destination.address2 ?? "",
     items: mappedItems,
   });
+
+  console.log("[QUOTE RESULT]", JSON.stringify(quote, null, 2));
 
   if (quote.outsideDeliveryArea) {
     return data({
