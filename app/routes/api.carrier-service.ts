@@ -15,20 +15,23 @@ export async function action({ request }: ActionFunctionArgs) {
     process.env.SHOPIFY_STORE_DOMAIN ||
     "";
 
-  const skus = items
-    .map((item: any) => item.sku)
-    .filter((sku: string | undefined) => Boolean(sku));
+  const variantIds = items
+  .map((item: any) => item.variant_id)
+  .filter(Boolean);
 
-  const pickupVendorBySku = await getPickupVendorMapForSkus(shop, skus);
+  const pickupVendorByVariant = await getPickupVendorMapForVariantIds(
+  shop,
+  variantIds,
+);
 
   const mappedItems = items.map((item: any) => ({
-    sku: item.sku,
-    quantity: item.quantity ?? 0,
-    grams: item.grams ?? 0,
-    price: item.price ?? 0,
-    requiresShipping: item.requires_shipping !== false,
-    pickupVendor: item.sku ? pickupVendorBySku[item.sku] || "" : "",
-  }));
+  sku: item.sku,
+  quantity: item.quantity ?? 0,
+  requiresShipping: item.requires_shipping !== false,
+  pickupVendor: item.variant_id
+    ? pickupVendorByVariant[item.variant_id] || ""
+    : "",
+}));
 
   const quote = await getQuote({
     shop,

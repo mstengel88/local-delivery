@@ -2,33 +2,25 @@ import shopify from "../shopify.server";
 
 type VariantPickupVendorMap = Record<string, string>;
 
-function escapeGraphQLString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-export async function getPickupVendorMapForSkus(
+export async function getPickupVendorMapForVariantIds(
   shop: string,
-  skus: string[],
+  variantIds: string[],
 ): Promise<VariantPickupVendorMap> {
-  const uniqueSkus = Array.from(
-    new Set(skus.map((sku) => (sku || "").trim()).filter(Boolean)),
-  );
-
-  if (!shop || uniqueSkus.length === 0) {
-    return {};
-  }
+  if (!shop || variantIds.length === 0) return {};
 
   const result: VariantPickupVendorMap = {};
 
   try {
     const client = await shopify.unauthenticated.admin(shop);
 
-    for (const sku of uniqueSkus) {
+    for (const id of variantIds) {
+      const gid = `gid://shopify/ProductVariant/${id}`;
+
       const query = `
-        query VariantBySku {
-          productVariants(first: 1, query: "sku:${escapeGraphQLString(sku)}") {
-            nodes {
-              sku
+        query VariantLookup {
+          node(id: "${gid}") {
+            ... on ProductVariant {
+              id
               product {
                 metafield(namespace: "shipping", key: "pickup_vendor") {
                   value
@@ -39,18 +31,16 @@ export async function getPickupVendorMapForSkus(
         }
       `;
 
-      const response = await client.admin.graphql(query);
-      const json = await response.json();
+      const res = await client.admin.graphql(query);
+      const json = await res.json();
 
-      const node = json?.data?.productVariants?.nodes?.[0];
+      const node = json?.data?.node;
       const pickupVendor = node?.product?.metafield?.value || "";
 
-      if (node?.sku) {
-        result[node.sku] = pickupVendor;
-      }
+      result[id] = pickupVendor;
     }
-  } catch (error) {
-    console.error("[PICKUP VENDOR LOOKUP ERROR]", error);
+  } catch (err) {
+    console.error("[VARIANT LOOKUP ERROR]", err);
   }
 
   return result;
