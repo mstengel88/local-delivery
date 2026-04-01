@@ -19,9 +19,8 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const variantIds = items
     .map((item: any) => item.variant_id)
-    .filter(Boolean);
-
-  console.log("[CARRIER VARIANT IDS]", variantIds);
+    .filter(Boolean)
+    .map((id: any) => String(id));
 
   const pickupVendorByVariant =
     variantIds.length > 0
@@ -36,9 +35,10 @@ export async function action({ request }: ActionFunctionArgs) {
     grams: item.grams ?? 0,
     price: item.price ?? 0,
     requiresShipping: item.requires_shipping !== false,
-    pickupVendor: item.variant_id
-      ? pickupVendorByVariant[item.variant_id] || ""
-      : "",
+    pickupVendor:
+      item.vendor ||
+      item.product_vendor ||
+      (item.variant_id ? pickupVendorByVariant[String(item.variant_id)] || "" : ""),
   }));
 
   console.log("[MAPPED ITEMS]", JSON.stringify(mappedItems, null, 2));

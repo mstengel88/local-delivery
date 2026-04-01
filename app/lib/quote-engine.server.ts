@@ -135,21 +135,37 @@ async function getOriginFromVendorLabel(
 ): Promise<{ label: string; address: string } | null> {
   if (!vendorLabel) return null;
 
-  const cacheKey = vendorLabel.trim().toLowerCase();
+  const cleaned = vendorLabel.trim();
+  const cacheKey = cleaned.toLowerCase();
+
   const cached = vendorOriginCache.get(cacheKey);
   const cachedValue = getCache(cached || null);
   if (cachedValue !== null) return cachedValue;
 
-  const { data } = await supabaseAdmin
+  let data: { label: string; address: string } | null = null;
+
+  const exact = await supabaseAdmin
     .from("origin_addresses")
     .select("label, address")
-    .ilike("label", vendorLabel)
+    .ilike("label", cleaned)
     .limit(1)
-    .single();
+    .maybeSingle();
 
-  const result = data || null;
-  vendorOriginCache.set(cacheKey, setCache(result, TTL_LONG));
-  return result;
+  if (exact.data) {
+    data = exact.data;
+  } else {
+    const contains = await supabaseAdmin
+      .from("origin_addresses")
+      .select("label, address")
+      .ilike("label", `%${cleaned}%`)
+      .limit(1)
+      .maybeSingle();
+
+    data = contains.data || null;
+  }
+
+  vendorOriginCache.set(cacheKey, setCache(data, TTL_LONG));
+  return data;
 }
 
 async function getMaterialRules(): Promise<MaterialRule[]> {
