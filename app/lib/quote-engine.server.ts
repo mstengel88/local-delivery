@@ -15,12 +15,20 @@ type MaterialRule = {
   sort_order: number;
 };
 
+type CacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+};
+
+const TTL_SHORT = 60_000;
+const TTL_LONG = 10 * 60_000;
+
 const FALLBACK_MATERIAL_RULES: MaterialRule[] = [
   {
     prefix: "100",
     material_name: "Aggregate",
     truck_capacity: 22,
-    vendor_source: "Aggregate Yard",
+    vendor_source: "Aggregate",
     is_active: true,
     sort_order: 100,
   },
@@ -28,7 +36,7 @@ const FALLBACK_MATERIAL_RULES: MaterialRule[] = [
     prefix: "300",
     material_name: "Mulch",
     truck_capacity: 25,
-    vendor_source: "Mulch Yard",
+    vendor_source: "Mulch",
     is_active: true,
     sort_order: 300,
   },
@@ -36,9 +44,17 @@ const FALLBACK_MATERIAL_RULES: MaterialRule[] = [
     prefix: "400",
     material_name: "Soil",
     truck_capacity: 25,
-    vendor_source: "Soil Yard",
+    vendor_source: "Soil",
     is_active: true,
     sort_order: 400,
+  },
+  {
+    prefix: "499",
+    material_name: "Field Run",
+    truck_capacity: 20,
+    vendor_source: "Field Run",
+    is_active: true,
+    sort_order: 499,
   },
 ];
 
@@ -73,14 +89,6 @@ export type QuoteResult = {
   outsideDeliveryPhone?: string;
 };
 
-type CacheEntry<T> = {
-  value: T;
-  expiresAt: number;
-};
-
-const TTL_SHORT = 60_000;
-const TTL_LONG = 10 * 60_000;
-
 function getCache<T>(entry: CacheEntry<T> | null): T | null {
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) return null;
@@ -96,17 +104,21 @@ function setCache<T>(value: T, ttlMs: number): CacheEntry<T> {
 
 let materialRulesCache: CacheEntry<MaterialRule[]> | null = null;
 let activeOriginCache: CacheEntry<{ label: string; address: string }> | null = null;
+
 const vendorOriginCache = new Map<
   string,
   CacheEntry<{ label: string; address: string } | null>
 >();
-const legDistanceCache = new Map<
+
+const distanceMatrixCache = new Map<
   string,
-  CacheEntry<{
-    minutes: number;
-    miles: number;
-    durationText: string;
-  } | null>
+  CacheEntry<
+    | {
+        minutes: number;
+        miles: number;
+      }[][]
+    | null
+  >
 >();
 
 async function getActiveOriginAddress(): Promise<{ label: string; address: string }> {
@@ -259,86 +271,60 @@ function buildServiceDescription(totalTrucks: number, sourceText: string): strin
   return `${baseDescription}${sourceText ? sourceText : ""}`;
 }
 
-async function getLegDistance(
-  originAddress: string,
-  destinationAddress: string,
+function normalizeAddressKey(address: string): string {
+  return address.trim().toLowerCase();
+}
+
+async function getDistanceMatrix(
+  origins: string[],
+  destinations: string[],
   googleMapsApiKey: string,
-): Promise<{
-  minutes: number;
-  miles: number;
-  durationText: string;
-} | null> {
-  const cacheKey = `${originAddress}|${destinationAddress}`;
-  const cached = legDistanceCache.get(cacheKey);
+): Promise<
+  | {
+      minutes: number;
+      miles: number;
+    }[][]
+  | null
+> {
+  const originKey = origins.map(normalizeAddressKey).join("||");
+  const destinationKey = destinations.map(normalizeAddressKey).join("||");
+  const cacheKey = `${originKey}>>>${destinationKey}`;
+
+  const cached = distanceMatrixCache.get(cacheKey);
   const cachedValue = getCache(cached || null);
-  if (cachedValue !== null) return cachedValue;
+  if (cachedValue !== null) {
+    return cachedValue;
+  }
 
   const mapsUrl = new URL("https://maps.googleapis.com/maps/api/distancematrix/json");
-  mapsUrl.searchParams.set("origins", originAddress);
-  mapsUrl.searchParams.set("destinations", destinationAddress);
+  mapsUrl.searchParams.set("origins", origins.join("|"));
+  mapsUrl.searchParams.set("destinations", destinations.join("|"));
   mapsUrl.searchParams.set("key", googleMapsApiKey);
   mapsUrl.searchParams.set("units", "imperial");
 
-  const mapsRes = await fetch(mapsUrl.toString());
-  const mapsData = await mapsRes.json();
+  const res = await fetch(mapsUrl.toString());
+  const data = await res.json();
 
-  if (mapsData.status !== "OK") {
-    legDistanceCache.set(cacheKey, setCache(null, TTL_SHORT));
+  if (data.status !== "OK") {
+    distanceMatrixCache.set(cacheKey, setCache(null, TTL_SHORT));
     return null;
   }
 
-  const element = mapsData.rows?.[0]?.elements?.[0];
-  if (!element || element.status !== "OK") {
-    legDistanceCache.set(cacheKey, setCache(null, TTL_SHORT));
-    return null;
-  }
+  const matrix = data.rows.map((row: any) =>
+    row.elements.map((el: any) => {
+      if (!el || el.status !== "OK") {
+        return null;
+      }
 
-  const result = {
-    minutes: element.duration.value / 60,
-    miles: Math.round((element.distance.value / 1609.34) * 10) / 10,
-    durationText: element.duration.text,
-  };
-
-  legDistanceCache.set(cacheKey, setCache(result, TTL_LONG));
-  return result;
-}
-
-async function getLoopRouteCost(
-  yardAddress: string,
-  pickupAddress: string,
-  customerAddress: string,
-  googleMapsApiKey: string,
-): Promise<{
-  costDollars: number;
-  oneWayMilesForRadiusCheck: number;
-  totalLoopMiles: number;
-  totalLoopMinutes: number;
-} | null> {
-  const yardToPickup = await getLegDistance(yardAddress, pickupAddress, googleMapsApiKey);
-  if (!yardToPickup) return null;
-
-  const pickupToCustomer = await getLegDistance(
-    pickupAddress,
-    customerAddress,
-    googleMapsApiKey,
+      return {
+        minutes: el.duration.value / 60,
+        miles: Math.round((el.distance.value / 1609.34) * 10) / 10,
+      };
+    }),
   );
-  if (!pickupToCustomer) return null;
 
-  const customerToYard = await getLegDistance(customerAddress, yardAddress, googleMapsApiKey);
-  if (!customerToYard) return null;
-
-  const totalLoopMinutes =
-    yardToPickup.minutes + pickupToCustomer.minutes + customerToYard.minutes;
-
-  const totalLoopMiles =
-    yardToPickup.miles + pickupToCustomer.miles + customerToYard.miles;
-
-  return {
-    costDollars: totalLoopMinutes * RATE_PER_MINUTE,
-    oneWayMilesForRadiusCheck: pickupToCustomer.miles,
-    totalLoopMiles,
-    totalLoopMinutes,
-  };
+  distanceMatrixCache.set(cacheKey, setCache(matrix, TTL_LONG));
+  return matrix;
 }
 
 export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
@@ -428,7 +414,9 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
       fallbackVendorSource,
     } = getMaterialFromSku(item.sku, materialRules);
 
-    const pickupVendorLabel = item.pickupVendor || fallbackVendorSource || defaultYard.label;
+    const pickupVendorLabel =
+      item.pickupVendor || fallbackVendorSource || defaultYard.label;
+
     const pickupOrigin =
       (await getOriginFromVendorLabel(pickupVendorLabel)) || defaultYard;
 
@@ -468,23 +456,60 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   let totalTrucks = 0;
   let maxOneWayMiles = 0;
 
-  for (const group of Object.values(groupedItems)) {
+  const groups = Object.values(groupedItems);
+  const pickupAddresses = Array.from(new Set(groups.map((g) => g.pickupAddress)));
+  const origins = [defaultYard.address, ...pickupAddresses];
+  const destinations = [defaultYard.address, customerAddress];
+
+  const matrix = await getDistanceMatrix(origins, destinations, googleMapsApiKey);
+
+  if (!matrix) {
+    return {
+      serviceName: "Delivery Unavailable",
+      serviceCode: "CUSTOM_DELIVERY",
+      cents: 0,
+      description: "Unable to calculate delivery route",
+      eta: "Unavailable",
+      summary: "Unable to calculate delivery route",
+    };
+  }
+
+  const yardOriginIndex = 0;
+  const destinationYardIndex = 0;
+  const destinationCustomerIndex = 1;
+
+  const pickupIndexMap = new Map<string, number>();
+  pickupAddresses.forEach((address, index) => {
+    pickupIndexMap.set(address, index + 1);
+  });
+
+  for (const group of groups) {
     const trucksForGroup = Math.max(1, Math.ceil(group.qty / group.truckCapacity));
 
-    const routeCost = await getLoopRouteCost(
-      defaultYard.address,
-      group.pickupAddress,
-      customerAddress,
-      googleMapsApiKey,
-    );
+    const pickupOriginIndex = pickupIndexMap.get(group.pickupAddress);
+    if (pickupOriginIndex === undefined) continue;
 
-    if (!routeCost) continue;
+    const yardToPickup = matrix[yardOriginIndex]?.[pickupOriginIndex];
+    const pickupToCustomer = matrix[pickupOriginIndex]?.[destinationCustomerIndex];
+    const customerToYard = matrix[destinationCustomerIndex]?.[destinationYardIndex];
 
-    if (routeCost.oneWayMilesForRadiusCheck > maxOneWayMiles) {
-      maxOneWayMiles = routeCost.oneWayMilesForRadiusCheck;
+    if (!yardToPickup || !pickupToCustomer || !customerToYard) {
+      continue;
     }
 
-    let groupCostDollars = routeCost.costDollars * trucksForGroup;
+    const totalLoopMinutes =
+      yardToPickup.minutes + pickupToCustomer.minutes + customerToYard.minutes;
+
+    const totalLoopMiles =
+      yardToPickup.miles + pickupToCustomer.miles + customerToYard.miles;
+
+    const oneWayMilesForRadiusCheck = pickupToCustomer.miles;
+
+    if (oneWayMilesForRadiusCheck > maxOneWayMiles) {
+      maxOneWayMiles = oneWayMilesForRadiusCheck;
+    }
+
+    let groupCostDollars = totalLoopMinutes * RATE_PER_MINUTE * trucksForGroup;
 
     if (settings.enableRemoteSurcharge && input.postalCode.startsWith("9")) {
       groupCostDollars += 3;
@@ -495,23 +520,21 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
     if (settings.enableDebugLogging) {
       console.log(
-        `[QUOTE GROUP] source=${group.pickupVendor} material=${group.materialName} qty=${group.qty} capacity=${group.truckCapacity} trucks=${trucksForGroup} customerMiles=${routeCost.oneWayMilesForRadiusCheck} loopMiles=${routeCost.totalLoopMiles} cost=${groupCostDollars.toFixed(2)}`,
+        `[QUOTE GROUP BATCH] source=${group.pickupVendor} material=${group.materialName} qty=${group.qty} capacity=${group.truckCapacity} trucks=${trucksForGroup} customerMiles=${oneWayMilesForRadiusCheck} loopMiles=${totalLoopMiles} cost=${groupCostDollars.toFixed(2)}`,
       );
     }
   }
 
   if (totalTrucks === 0) {
-    const fallbackLoop = await getLoopRouteCost(
-      defaultYard.address,
-      defaultYard.address,
-      customerAddress,
-      googleMapsApiKey,
-    );
+    const yardToCustomer = matrix[yardOriginIndex]?.[destinationCustomerIndex];
+    const customerToYard = matrix[destinationCustomerIndex]?.[destinationYardIndex];
 
-    if (fallbackLoop) {
-      maxOneWayMiles = fallbackLoop.oneWayMilesForRadiusCheck;
+    if (yardToCustomer && customerToYard) {
+      maxOneWayMiles = yardToCustomer.miles;
 
-      let fallbackDollars = fallbackLoop.costDollars;
+      let fallbackDollars =
+        (yardToCustomer.minutes + customerToYard.minutes) * RATE_PER_MINUTE;
+
       if (settings.enableRemoteSurcharge && input.postalCode.startsWith("9")) {
         fallbackDollars += 3;
       }
