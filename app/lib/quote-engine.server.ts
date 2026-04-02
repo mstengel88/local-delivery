@@ -113,10 +113,10 @@ const vendorOriginCache = new Map<
 const distanceMatrixCache = new Map<
   string,
   CacheEntry<
-    | {
+    | ({
         minutes: number;
         miles: number;
-      }[][]
+      } | null)[][]
     | null
   >
 >();
@@ -279,13 +279,7 @@ async function getDistanceMatrix(
   origins: string[],
   destinations: string[],
   googleMapsApiKey: string,
-): Promise<
-  | {
-      minutes: number;
-      miles: number;
-    }[][]
-  | null
-> {
+): Promise<(({ minutes: number; miles: number } | null)[][]) | null> {
   const originKey = origins.map(normalizeAddressKey).join("||");
   const destinationKey = destinations.map(normalizeAddressKey).join("||");
   const cacheKey = `${originKey}>>>${destinationKey}`;
@@ -458,7 +452,9 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
   const groups = Object.values(groupedItems);
   const pickupAddresses = Array.from(new Set(groups.map((g) => g.pickupAddress)));
-  const origins = [defaultYard.address, ...pickupAddresses];
+
+  // IMPORTANT: customer must be an origin too, so customer -> yard can be read from the same matrix
+  const origins = [defaultYard.address, ...pickupAddresses, customerAddress];
   const destinations = [defaultYard.address, customerAddress];
 
   const matrix = await getDistanceMatrix(origins, destinations, googleMapsApiKey);
@@ -475,6 +471,8 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   }
 
   const yardOriginIndex = 0;
+  const customerOriginIndex = origins.length - 1;
+
   const destinationYardIndex = 0;
   const destinationCustomerIndex = 1;
 
@@ -489,19 +487,24 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
     const pickupOriginIndex = pickupIndexMap.get(group.pickupAddress);
     if (pickupOriginIndex === undefined) continue;
 
-    const yardToPickup = matrix[yardOriginIndex]?.[pickupOriginIndex];
-    const pickupToCustomer = matrix[pickupOriginIndex]?.[destinationCustomerIndex];
-    const customerToYard = matrix[destinationCustomerIndex]?.[destinationYardIndex];
+    const yardToPickup = matrix[yardOriginIndex]?.[destinationYardIndex] && matrix[pickupOriginIndex]
+      ? matrix[yardOriginIndex]?.[pickupOriginIndex === yardOriginIndex ? destinationYardIndex : destinationYardIndex]
+      : null;
 
-    if (!yardToPickup || !pickupToCustomer || !customerToYard) {
+    // We cannot read yard->pickup from destinations [yard, customer], so do it from pickup->yard if needed
+    const pickupToYard = matrix[pickupOriginIndex]?.[destinationYardIndex];
+    const pickupToCustomer = matrix[pickupOriginIndex]?.[destinationCustomerIndex];
+    const customerToYard = matrix[customerOriginIndex]?.[destinationYardIndex];
+
+    if (!pickupToYard || !pickupToCustomer || !customerToYard) {
       continue;
     }
 
     const totalLoopMinutes =
-      yardToPickup.minutes + pickupToCustomer.minutes + customerToYard.minutes;
+      pickupToYard.minutes + pickupToCustomer.minutes + customerToYard.minutes;
 
     const totalLoopMiles =
-      yardToPickup.miles + pickupToCustomer.miles + customerToYard.miles;
+      pickupToYard.miles + pickupToCustomer.miles + customerToYard.miles;
 
     const oneWayMilesForRadiusCheck = pickupToCustomer.miles;
 
@@ -527,7 +530,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
   if (totalTrucks === 0) {
     const yardToCustomer = matrix[yardOriginIndex]?.[destinationCustomerIndex];
-    const customerToYard = matrix[destinationCustomerIndex]?.[destinationYardIndex];
+    const customerToYard = matrix[customerOriginIndex]?.[destinationYardIndex];
 
     if (yardToCustomer && customerToYard) {
       maxOneWayMiles = yardToCustomer.miles;
