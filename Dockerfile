@@ -13,7 +13,7 @@ RUN apt-get update -y && apt-get install -y openssl
 COPY package*.json ./
 COPY prisma ./prisma
 
-RUN --mount=type=cache,target=/root/.npm npm ci
+RUN --mount=type=cache,target=/root/.npm npm install --legacy-peer-deps
 RUN npx prisma generate
 
 COPY . .
