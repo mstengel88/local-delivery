@@ -8,6 +8,8 @@ ENV NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000
 ENV NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
 ENV NPM_CONFIG_NETWORK_TIMEOUT=300000
 
+RUN apt-get update -y && apt-get install -y openssl
+
 COPY package*.json ./
 COPY prisma ./prisma
 
@@ -16,12 +18,13 @@ RUN npx prisma generate
 
 COPY . .
 RUN npm run build
-RUN npm prune --omit=dev
 
 FROM node:20-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
+
+RUN apt-get update -y && apt-get install -y openssl
 
 COPY --from=build /app/package*.json ./
 COPY --from=build /app/node_modules ./node_modules
@@ -32,4 +35,4 @@ COPY --from=build /app/public ./public
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma migrate deploy && npm run start"]
+CMD ["npm", "run", "start"]
