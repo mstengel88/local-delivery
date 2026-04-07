@@ -15,12 +15,15 @@ const PRODUCT_OPTIONS: ProductOption[] = [
   { title: "Field Run", sku: "499-349", vendor: "Liesener" },
 ];
 
+const LINE_COUNT = 6;
+
 export async function loader({ request }: any) {
   const { session } = await authenticate.admin(request);
 
   return data({
     shop: session.shop,
     products: PRODUCT_OPTIONS,
+    lineCount: LINE_COUNT,
   });
 }
 
@@ -35,16 +38,59 @@ export async function action({ request }: any) {
   const postalCode = String(form.get("postalCode") || "");
   const country = String(form.get("country") || "US");
 
-  const selectedSku = String(form.get("sku") || "");
-  const quantity = Number(form.get("quantity") || 0);
+  const items: Array<{
+    sku?: string;
+    quantity: number;
+    requiresShipping?: boolean;
+    pickupVendor?: string;
+  }> = [];
 
-  const product = PRODUCT_OPTIONS.find((p) => p.sku === selectedSku);
+  const selectedLines: Array<{
+    title: string;
+    sku: string;
+    vendor: string;
+    quantity: number;
+  }> = [];
 
-  if (!product || quantity <= 0) {
+  for (let i = 0; i < LINE_COUNT; i++) {
+    const sku = String(form.get(`sku_${i}`) || "").trim();
+    const quantity = Number(form.get(`quantity_${i}`) || 0);
+
+    if (!sku || quantity <= 0) continue;
+
+    const product = PRODUCT_OPTIONS.find((p) => p.sku === sku);
+    if (!product) continue;
+
+    items.push({
+      sku: product.sku,
+      quantity,
+      requiresShipping: true,
+      pickupVendor: product.vendor,
+    });
+
+    selectedLines.push({
+      title: product.title,
+      sku: product.sku,
+      vendor: product.vendor,
+      quantity,
+    });
+  }
+
+  if (items.length === 0) {
     return data(
       {
         ok: false,
-        message: "Please select a product and enter a valid quantity.",
+        message: "Add at least one product line with a quantity greater than 0.",
+      },
+      { status: 400 },
+    );
+  }
+
+  if (!address1 || !city || !province || !postalCode) {
+    return data(
+      {
+        ok: false,
+        message: "Address 1, city, state, and ZIP are required.",
       },
       { status: 400 },
     );
@@ -58,21 +104,13 @@ export async function action({ request }: any) {
     city,
     address1,
     address2,
-    items: [
-      {
-        sku: product.sku,
-        quantity,
-        requiresShipping: true,
-        pickupVendor: product.vendor,
-      },
-    ],
+    items,
   });
 
   return data({
     ok: true,
     quote,
-    selectedProduct: product,
-    quantity,
+    selectedLines,
     address: {
       address1,
       address2,
@@ -85,77 +123,164 @@ export async function action({ request }: any) {
 }
 
 export default function CustomQuotePage() {
-  const { products } = useLoaderData<typeof loader>();
+  const { products, lineCount } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>() as any;
   const navigation = useNavigation();
 
   const isSubmitting = navigation.state === "submitting";
 
   return (
-    <div style={{ padding: 30, maxWidth: 900 }}>
+    <div style={{ padding: 30, maxWidth: 1100 }}>
       <h1 style={{ fontSize: 28, marginBottom: 8 }}>Custom Quote Tool</h1>
       <p style={{ marginBottom: 24 }}>
-        Generate manual delivery quotes using the same pricing logic as checkout.
+        Build a multi-line quote using the same delivery logic as checkout.
       </p>
 
-      <Form method="post" style={{ display: "grid", gap: 16 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 160px", gap: 16 }}>
+      <Form method="post" style={{ display: "grid", gap: 20 }}>
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: 10,
+            padding: 20,
+            display: "grid",
+            gap: 14,
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: 20 }}>Delivery Address</h2>
+
           <label>
-            Product
+            Address 1
             <br />
-            <select name="sku" style={{ width: "100%", marginTop: 6 }}>
-              <option value="">Select product</option>
-              {products.map((product) => (
-                <option key={product.sku} value={product.sku}>
-                  {product.title} ({product.sku})
-                </option>
-              ))}
-            </select>
+            <input
+              type="text"
+              name="address1"
+              defaultValue={actionData?.address?.address1 || ""}
+              style={{ width: "100%", marginTop: 6 }}
+            />
           </label>
 
           <label>
-            Quantity
+            Address 2
             <br />
-            <input type="number" name="quantity" min="1" style={{ width: "100%", marginTop: 6 }} />
+            <input
+              type="text"
+              name="address2"
+              defaultValue={actionData?.address?.address2 || ""}
+              style={{ width: "100%", marginTop: 6 }}
+            />
           </label>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 140px 140px 120px",
+              gap: 16,
+            }}
+          >
+            <label>
+              City
+              <br />
+              <input
+                type="text"
+                name="city"
+                defaultValue={actionData?.address?.city || ""}
+                style={{ width: "100%", marginTop: 6 }}
+              />
+            </label>
+
+            <label>
+              State
+              <br />
+              <input
+                type="text"
+                name="province"
+                defaultValue={actionData?.address?.province || "WI"}
+                style={{ width: "100%", marginTop: 6 }}
+              />
+            </label>
+
+            <label>
+              ZIP
+              <br />
+              <input
+                type="text"
+                name="postalCode"
+                defaultValue={actionData?.address?.postalCode || ""}
+                style={{ width: "100%", marginTop: 6 }}
+              />
+            </label>
+
+            <label>
+              Country
+              <br />
+              <input
+                type="text"
+                name="country"
+                defaultValue={actionData?.address?.country || "US"}
+                style={{ width: "100%", marginTop: 6 }}
+              />
+            </label>
+          </div>
         </div>
 
-        <label>
-          Address 1
-          <br />
-          <input type="text" name="address1" style={{ width: "100%", marginTop: 6 }} />
-        </label>
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: 10,
+            padding: 20,
+            display: "grid",
+            gap: 14,
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: 20 }}>Quote Lines</h2>
 
-        <label>
-          Address 2
-          <br />
-          <input type="text" name="address2" style={{ width: "100%", marginTop: 6 }} />
-        </label>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(320px, 1fr) 140px",
+              gap: 12,
+              fontWeight: 600,
+            }}
+          >
+            <div>Product</div>
+            <div>Quantity</div>
+          </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 160px 160px 120px", gap: 16 }}>
-          <label>
-            City
-            <br />
-            <input type="text" name="city" style={{ width: "100%", marginTop: 6 }} />
-          </label>
+          {Array.from({ length: lineCount }).map((_, i) => {
+            const selectedLine = actionData?.selectedLines?.[i];
+            return (
+              <div
+                key={i}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(320px, 1fr) 140px",
+                  gap: 12,
+                }}
+              >
+                <select
+                  name={`sku_${i}`}
+                  defaultValue={selectedLine?.sku || ""}
+                  style={{ width: "100%" }}
+                >
+                  <option value="">Select product</option>
+                  {products.map((product) => (
+                    <option key={product.sku} value={product.sku}>
+                      {product.title} ({product.sku}) — {product.vendor}
+                    </option>
+                  ))}
+                </select>
 
-          <label>
-            State
-            <br />
-            <input type="text" name="province" defaultValue="WI" style={{ width: "100%", marginTop: 6 }} />
-          </label>
-
-          <label>
-            ZIP
-            <br />
-            <input type="text" name="postalCode" style={{ width: "100%", marginTop: 6 }} />
-          </label>
-
-          <label>
-            Country
-            <br />
-            <input type="text" name="country" defaultValue="US" style={{ width: "100%", marginTop: 6 }} />
-          </label>
+                <input
+                  type="number"
+                  name={`quantity_${i}`}
+                  min="0"
+                  step="1"
+                  defaultValue={selectedLine?.quantity || ""}
+                  style={{ width: "100%" }}
+                />
+              </div>
+            );
+          })}
         </div>
 
         <button
@@ -193,23 +318,77 @@ export default function CustomQuotePage() {
         <div
           style={{
             marginTop: 24,
-            border: "1px solid #e5e7eb",
-            borderRadius: 10,
-            padding: 20,
             display: "grid",
-            gap: 10,
+            gap: 18,
           }}
         >
-          <h2 style={{ margin: 0 }}>Quote Result</h2>
-          <div><strong>Service:</strong> {actionData.quote.serviceName}</div>
-          <div><strong>Price:</strong> ${(actionData.quote.cents / 100).toFixed(2)}</div>
-          <div><strong>Description:</strong> {actionData.quote.description}</div>
-          <div><strong>ETA:</strong> {actionData.quote.eta}</div>
-          <div><strong>Summary:</strong> {actionData.quote.summary}</div>
-          <div><strong>Outside Delivery Area:</strong> {actionData.quote.outsideDeliveryArea ? "Yes" : "No"}</div>
-          {actionData.quote.outsideDeliveryMiles ? (
-            <div><strong>Distance:</strong> {actionData.quote.outsideDeliveryMiles} miles</div>
-          ) : null}
+          <div
+            style={{
+              border: "1px solid #e5e7eb",
+              borderRadius: 10,
+              padding: 20,
+              display: "grid",
+              gap: 10,
+            }}
+          >
+            <h2 style={{ margin: 0 }}>Quote Result</h2>
+            <div><strong>Service:</strong> {actionData.quote.serviceName}</div>
+            <div><strong>Price:</strong> ${(actionData.quote.cents / 100).toFixed(2)}</div>
+            <div><strong>Description:</strong> {actionData.quote.description}</div>
+            <div><strong>ETA:</strong> {actionData.quote.eta}</div>
+            <div><strong>Summary:</strong> {actionData.quote.summary}</div>
+            <div>
+              <strong>Outside Delivery Area:</strong>{" "}
+              {actionData.quote.outsideDeliveryArea ? "Yes" : "No"}
+            </div>
+            {actionData.quote.outsideDeliveryMiles ? (
+              <div>
+                <strong>Distance:</strong> {actionData.quote.outsideDeliveryMiles} miles
+              </div>
+            ) : null}
+          </div>
+
+          <div
+            style={{
+              border: "1px solid #e5e7eb",
+              borderRadius: 10,
+              padding: 20,
+              display: "grid",
+              gap: 12,
+            }}
+          >
+            <h2 style={{ margin: 0 }}>Included Products</h2>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(260px, 1fr) 140px 180px",
+                gap: 12,
+                fontWeight: 600,
+              }}
+            >
+              <div>Product</div>
+              <div>Quantity</div>
+              <div>Vendor</div>
+            </div>
+
+            {actionData.selectedLines.map((line: any, index: number) => (
+              <div
+                key={`${line.sku}-${index}`}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(260px, 1fr) 140px 180px",
+                  gap: 12,
+                }}
+              >
+                <div>
+                  {line.title} ({line.sku})
+                </div>
+                <div>{line.quantity}</div>
+                <div>{line.vendor}</div>
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
     </div>
