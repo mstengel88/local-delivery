@@ -9,26 +9,70 @@ type ProductOption = {
   vendor: string;
 };
 
-const PRODUCT_OPTIONS: ProductOption[] = [
-  { title: "#1 Stone", sku: "100-681", vendor: "Lannon West" },
-  { title: "Lawn & Garden Topsoil", sku: "400-134", vendor: "Green Hills Supply" },
-  { title: "Field Run", sku: "499-349", vendor: "Liesener" },
-];
-
 const LINE_COUNT = 6;
 
+async function getProductOptions(admin: any): Promise<ProductOption[]> {
+  const response = await admin.graphql(`
+    query AdminQuoteProducts {
+      products(first: 100, sortKey: TITLE) {
+        nodes {
+          title
+          vendor
+          variants(first: 50) {
+            nodes {
+              sku
+              title
+            }
+          }
+        }
+      }
+    }
+  `);
+
+  const json = await response.json();
+  const products = json?.data?.products?.nodes || [];
+
+  const options: ProductOption[] = [];
+
+  for (const product of products) {
+    const vendor = product?.vendor || "";
+    const productTitle = product?.title || "";
+
+    for (const variant of product?.variants?.nodes || []) {
+      const sku = (variant?.sku || "").trim();
+      if (!sku) continue;
+
+      const variantTitle = (variant?.title || "").trim();
+      const title =
+        variantTitle && variantTitle !== "Default Title"
+          ? `${productTitle} - ${variantTitle}`
+          : productTitle;
+
+      options.push({
+        title,
+        sku,
+        vendor,
+      });
+    }
+  }
+
+  return options.sort((a, b) => a.title.localeCompare(b.title));
+}
+
 export async function loader({ request }: any) {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
+  const products = await getProductOptions(admin);
 
   return data({
     shop: session.shop,
-    products: PRODUCT_OPTIONS,
+    products,
     lineCount: LINE_COUNT,
   });
 }
 
 export async function action({ request }: any) {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
+  const products = await getProductOptions(admin);
   const form = await request.formData();
 
   const address1 = String(form.get("address1") || "");
@@ -58,7 +102,7 @@ export async function action({ request }: any) {
 
     if (!sku || quantity <= 0) continue;
 
-    const product = PRODUCT_OPTIONS.find((p) => p.sku === sku);
+    const product = products.find((p) => p.sku === sku);
     if (!product) continue;
 
     items.push({
@@ -81,6 +125,15 @@ export async function action({ request }: any) {
       {
         ok: false,
         message: "Add at least one product line with a quantity greater than 0.",
+        selectedLines,
+        address: {
+          address1,
+          address2,
+          city,
+          province,
+          postalCode,
+          country,
+        },
       },
       { status: 400 },
     );
@@ -91,6 +144,15 @@ export async function action({ request }: any) {
       {
         ok: false,
         message: "Address 1, city, state, and ZIP are required.",
+        selectedLines,
+        address: {
+          address1,
+          address2,
+          city,
+          province,
+          postalCode,
+          country,
+        },
       },
       { status: 400 },
     );
@@ -263,7 +325,7 @@ export default function CustomQuotePage() {
                   style={{ width: "100%" }}
                 >
                   <option value="">Select product</option>
-                  {products.map((product) => (
+                  {products.map((product: ProductOption) => (
                     <option key={product.sku} value={product.sku}>
                       {product.title} ({product.sku}) — {product.vendor}
                     </option>
