@@ -1,4 +1,4 @@
-import { Outlet, Link } from "react-router";
+import { Outlet, Link, useLocation } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 
@@ -16,6 +16,9 @@ export const headers = (headersArgs: any) => {
 };
 
 export default function AppLayout() {
+  const location = useLocation();
+  const qs = location.search || "";
+
   return (
     <div>
       <nav
@@ -26,9 +29,9 @@ export default function AppLayout() {
           borderBottom: "1px solid #e5e7eb",
         }}
       >
-        <Link to="/app">Dashboard</Link>
-        <Link to="/app/admin">Admin</Link>
-        <Link to="/app/custom-quote">Custom Quote</Link>
+        <Link to={`/app${qs}`}>Dashboard</Link>
+        <Link to={`/app/admin${qs}`}>Admin</Link>
+        <Link to={`/app/custom-quote${qs}`}>Custom Quote</Link>
       </nav>
 
       <Outlet />
