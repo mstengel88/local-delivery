@@ -3,7 +3,6 @@ import type { EntryContext } from "react-router";
 import { createReadableStreamFromReadable } from "@react-router/node";
 import { ServerRouter } from "react-router";
 import { renderToPipeableStream } from "react-dom/server";
-import { addDocumentResponseHeaders } from "./shopify.server";
 
 export default function handleRequest(
   request: Request,
@@ -20,7 +19,6 @@ export default function handleRequest(
         onShellReady() {
           shellRendered = true;
           responseHeaders.set("Content-Type", "text/html");
-          addDocumentResponseHeaders(request, responseHeaders);
 
           const body = new PassThrough();
           const stream = createReadableStreamFromReadable(body);
