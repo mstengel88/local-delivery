@@ -1,6 +1,8 @@
 import { Outlet } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import { NavMenu } from "@shopify/shopify-app-react-router/react";
+
 
 export async function loader({ request }: any) {
   await authenticate.admin(request);
@@ -16,5 +18,14 @@ export const headers = (headersArgs: any) => {
 };
 
 export default function AppLayout() {
-  return <Outlet />;
+  return (
+    <>
+      <NavMenu>
+        <a href="/app">Dashboard</a>
+        <a href="/app/custom-quote">Custom Quote</a>
+      </NavMenu>
+
+      <Outlet />
+    </>
+  );
 }
