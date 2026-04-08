@@ -4,13 +4,18 @@ import { getQuote } from "../lib/quote-engine.server";
 
 export async function action({ request }: ActionFunctionArgs) {
   const url = new URL(request.url);
-
   const body = await request.json();
+
   const rate = body?.rate ?? {};
   const destination = rate.destination ?? {};
   const items = Array.isArray(rate.items) ? rate.items : [];
 
-  const shop = url.searchParams.get("shop");
+  const shop =
+    url.searchParams.get("shop") ||
+    body?.shop ||
+    request.headers.get("x-shopify-shop-domain") ||
+    process.env.SHOPIFY_STORE_DOMAIN ||
+    "";
 
   if (!shop) {
     throw new Error("Missing shop parameter");
@@ -25,6 +30,7 @@ export async function action({ request }: ActionFunctionArgs) {
     pickupVendor: item.vendor || item.product_vendor || "",
   }));
 
+  console.log("[CARRIER SHOP]", shop);
   console.log("[MAPPED ITEMS]", JSON.stringify(mappedItems, null, 2));
 
   const quote = await getQuote({

@@ -9,11 +9,16 @@ export async function action({ request }: ActionFunctionArgs) {
   const lines = Array.isArray(body?.lines) ? body.lines : [];
 
   const url = new URL(request.url);
-const shop = url.searchParams.get("shop");
+  const shop =
+    url.searchParams.get("shop") ||
+    body?.shop ||
+    request.headers.get("x-shopify-shop-domain") ||
+    process.env.SHOPIFY_STORE_DOMAIN ||
+    "";
 
-if (!shop) {
-  throw new Error("Missing shop parameter");
-}
+  if (!shop) {
+    throw new Error("Missing shop parameter");
+  }
 
   const quote = await getQuote({
     shop,
