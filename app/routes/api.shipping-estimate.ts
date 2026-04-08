@@ -8,11 +8,11 @@ export async function action({ request }: ActionFunctionArgs) {
   const shippingAddress = body?.shippingAddress ?? {};
   const lines = Array.isArray(body?.lines) ? body.lines : [];
 
-  const shop =
-    body?.shop ||
-    request.headers.get("x-shopify-shop-domain") ||
-    process.env.SHOPIFY_STORE_DOMAIN ||
-    "";
+  const shop = url.searchParams.get("shop");
+
+if (!shop) {
+  throw new Error("Missing shop parameter");
+}
 
   const quote = await getQuote({
     shop,

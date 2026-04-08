@@ -8,11 +8,11 @@ export async function action({ request }: ActionFunctionArgs) {
   const destination = rate.destination ?? {};
   const items = Array.isArray(rate.items) ? rate.items : [];
 
-  const shop =
-    body?.shop ||
-    request.headers.get("x-shopify-shop-domain") ||
-    process.env.SHOPIFY_STORE_DOMAIN ||
-    "";
+  const shop = url.searchParams.get("shop");
+
+if (!shop) {
+  throw new Error("Missing shop parameter");
+}
 
   const mappedItems = items.map((item: any) => ({
     sku: item.sku,
