@@ -2,13 +2,11 @@ import { redirect } from "react-router";
 
 export async function loader({ request }: any) {
   const url = new URL(request.url);
-  const shop = url.searchParams.get("shop");
 
-  if (shop) {
-    return redirect(`/app?shop=${encodeURIComponent(shop)}`);
-  }
+  // Preserve ALL incoming Shopify params
+  const destination = `/app${url.search}`;
 
-  return redirect("/app");
+  return redirect(destination);
 }
 
 export default function Index() {
