@@ -18,13 +18,10 @@ export default function App() {
 
   return (
     <AppProvider embedded apiKey={apiKey}>
-      <Card>
-        <nav style={{ padding: '1rem', display: 'flex', gap: '1rem' }}>
-          <Link to="/app">Home</Link>
-          <Link to="/app/additional">Additional page</Link>
-          <Link to="/app/custom-quote">Custom Quote</Link>
-        </nav>
-      </Card>
+      <s-app-nav>
+        <s-link href="/app">Home</s-link>
+        <s-link href="/app/additional">Additional page</s-link>
+      </s-app-nav>
       <Outlet />
     </AppProvider>
   );
