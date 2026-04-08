@@ -3,6 +3,8 @@ import { data } from "react-router";
 import { getQuote } from "../lib/quote-engine.server";
 
 export async function action({ request }: ActionFunctionArgs) {
+  const url = new URL(request.url);
+
   const body = await request.json();
   const rate = body?.rate ?? {};
   const destination = rate.destination ?? {};
@@ -10,9 +12,9 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const shop = url.searchParams.get("shop");
 
-if (!shop) {
-  throw new Error("Missing shop parameter");
-}
+  if (!shop) {
+    throw new Error("Missing shop parameter");
+  }
 
   const mappedItems = items.map((item: any) => ({
     sku: item.sku,

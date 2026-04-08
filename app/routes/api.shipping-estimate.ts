@@ -8,7 +8,8 @@ export async function action({ request }: ActionFunctionArgs) {
   const shippingAddress = body?.shippingAddress ?? {};
   const lines = Array.isArray(body?.lines) ? body.lines : [];
 
-  const shop = url.searchParams.get("shop");
+  const url = new URL(request.url);
+const shop = url.searchParams.get("shop");
 
 if (!shop) {
   throw new Error("Missing shop parameter");

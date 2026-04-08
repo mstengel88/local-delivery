@@ -16,8 +16,8 @@ export default [
   route("api/shipping-estimate", "routes/api.shipping-estimate.ts"),
   route("api/carrier-service", "routes/api.carrier-service.ts"),
 
-  route("app/api/shipping-estimate", "routes/api.shipping-estimate.ts"),
-  route("app/api/carrier-service", "routes/api.carrier-service.ts"),
+  route("app/api/shipping-estimate", "routes/app.api.shipping-estimate.ts"),
+  route("app/api/carrier-service", "routes/app.api.carrier-service.ts"),
 
   route("webhooks/app/scopes_update", "routes/webhooks.app.scopes_update.tsx"),
   route("webhooks/app/uninstalled", "routes/webhooks.app.uninstalled.tsx"),
