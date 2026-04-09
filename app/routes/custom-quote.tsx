@@ -2,7 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { data, redirect } from "react-router";
 import { getQuote } from "../lib/quote-engine.server";
-import { saveCustomQuote } from "../lib/custom-quotes.server";
+import {
+  getRecentCustomQuotes,
+  saveCustomQuote,
+} from "../lib/custom-quotes.server";
 import {
   adminQuoteCookie,
   getAdminQuotePassword,
@@ -61,10 +64,12 @@ export async function loader({ request }: any) {
 
   const allowed = await hasAdminQuoteAccess(request);
   const products = allowed ? await getProductOptionsFromSupabase() : [];
+  const recentQuotes = allowed ? await getRecentCustomQuotes(15) : [];
 
   return data({
     allowed,
     products,
+    recentQuotes,
     googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
   });
 }
@@ -83,6 +88,7 @@ export async function action({ request }: any) {
           allowed: false,
           loginError: "Invalid password",
           products: [],
+          recentQuotes: [],
           googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
         },
         { status: 401 },
@@ -90,11 +96,13 @@ export async function action({ request }: any) {
     }
 
     const products = await getProductOptionsFromSupabase();
+    const recentQuotes = await getRecentCustomQuotes(15);
 
     return data(
       {
         allowed: true,
         products,
+        recentQuotes,
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
       },
       {
@@ -111,6 +119,8 @@ export async function action({ request }: any) {
       {
         allowed: false,
         loginError: "Please log in",
+        products: [],
+        recentQuotes: [],
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
       },
       { status: 401 },
@@ -118,6 +128,7 @@ export async function action({ request }: any) {
   }
 
   const products = await getProductOptionsFromSupabase();
+  const recentQuotes = await getRecentCustomQuotes(15);
 
   const customerName = String(form.get("customerName") || "");
   const address1 = String(form.get("address1") || "");
@@ -172,8 +183,10 @@ export async function action({ request }: any) {
       {
         allowed: true,
         products,
+        recentQuotes,
         ok: false,
-        message: "Add at least one product line with a selected product and quantity greater than 0.",
+        message:
+          "Add at least one product line with a selected product and quantity greater than 0.",
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
       },
       { status: 400 },
@@ -185,6 +198,7 @@ export async function action({ request }: any) {
       {
         allowed: true,
         products,
+        recentQuotes,
         ok: false,
         message: "Address 1, city, state, and ZIP are required.",
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
@@ -234,6 +248,7 @@ export async function action({ request }: any) {
   return data({
     allowed: true,
     products,
+    recentQuotes,
     ok: true,
     quote,
     selectedLines,
@@ -256,7 +271,7 @@ const styles = {
       'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   } as const,
   shell: {
-    maxWidth: "1240px",
+    maxWidth: "1280px",
     margin: "0 auto",
   } as const,
   hero: {
@@ -331,6 +346,7 @@ const styles = {
     padding: "12px 18px",
     fontWeight: 700,
     cursor: "pointer",
+    boxShadow: "0 10px 24px rgba(37, 99, 235, 0.35)",
   } as const,
   buttonSecondary: {
     background: "#0f766e",
@@ -340,6 +356,7 @@ const styles = {
     padding: "12px 18px",
     fontWeight: 700,
     cursor: "pointer",
+    boxShadow: "0 10px 24px rgba(15, 118, 110, 0.35)",
   } as const,
   buttonGhost: {
     background: "#111827",
@@ -349,6 +366,22 @@ const styles = {
     padding: "12px 18px",
     fontWeight: 600,
     cursor: "pointer",
+  } as const,
+  statusOk: {
+    marginTop: "18px",
+    padding: "14px 16px",
+    borderRadius: "14px",
+    background: "rgba(22, 163, 74, 0.15)",
+    border: "1px solid rgba(34, 197, 94, 0.5)",
+    color: "#dcfce7",
+  } as const,
+  statusErr: {
+    marginTop: "18px",
+    padding: "14px 16px",
+    borderRadius: "14px",
+    background: "rgba(220, 38, 38, 0.15)",
+    border: "1px solid rgba(248, 113, 113, 0.5)",
+    color: "#fee2e2",
   } as const,
 };
 
@@ -360,6 +393,7 @@ export default function PublicCustomQuotePage() {
 
   const allowed = actionData?.allowed ?? loaderData.allowed;
   const products = actionData?.products ?? loaderData.products ?? [];
+  const recentQuotes = actionData?.recentQuotes ?? loaderData.recentQuotes ?? [];
   const googleMapsApiKey =
     actionData?.googleMapsApiKey ?? loaderData.googleMapsApiKey ?? "";
 
@@ -428,6 +462,19 @@ export default function PublicCustomQuotePage() {
     setLines((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function filteredProducts(index: number) {
+    const search = (lines[index]?.search || "").toLowerCase().trim();
+    if (!search) return [];
+
+    return products
+      .filter((product: QuoteProductOption) => {
+        const haystack =
+          `${product.title} ${product.sku} ${product.vendor}`.toLowerCase();
+        return haystack.includes(search);
+      })
+      .slice(0, 12);
+  }
+
   async function copyQuote() {
     if (!quoteText) return;
     await navigator.clipboard.writeText(quoteText);
@@ -456,18 +503,7 @@ export default function PublicCustomQuotePage() {
               />
 
               {actionData?.loginError ? (
-                <div
-                  style={{
-                    marginTop: 18,
-                    padding: "14px 16px",
-                    borderRadius: 14,
-                    background: "rgba(220, 38, 38, 0.15)",
-                    border: "1px solid rgba(248, 113, 113, 0.5)",
-                    color: "#fee2e2",
-                  }}
-                >
-                  {actionData.loginError}
-                </div>
+                <div style={styles.statusErr}>{actionData.loginError}</div>
               ) : null}
 
               <button
@@ -494,7 +530,8 @@ export default function PublicCustomQuotePage() {
           <div>
             <h1 style={styles.title}>Custom Quote Tool</h1>
             <div style={styles.subtitle}>
-              Standalone quote portal with product search and address autocomplete.
+              Standalone quote portal with product images, customer history, and
+              address autocomplete.
             </div>
             <div style={{ marginTop: 8, color: "#64748b", fontSize: 13 }}>
               Loaded products: {products.length} · Google Places: {googleStatus}
@@ -512,7 +549,7 @@ export default function PublicCustomQuotePage() {
           <div style={styles.card}>
             <h2 style={styles.sectionTitle}>Customer & Delivery Address</h2>
             <p style={styles.sectionSub}>
-              Start typing the street address. Google Places should suggest matches.
+              Start typing the street address and choose a suggestion.
             </p>
 
             <div style={{ display: "grid", gap: "14px" }}>
@@ -621,7 +658,7 @@ export default function PublicCustomQuotePage() {
               <div>
                 <h2 style={styles.sectionTitle}>Quote Lines</h2>
                 <p style={styles.sectionSub}>
-                  Pick a product from the datalist, then enter quantity.
+                  Search by product, SKU, or vendor. Click a result to select it.
                 </p>
               </div>
 
@@ -630,100 +667,210 @@ export default function PublicCustomQuotePage() {
               </button>
             </div>
 
-            <datalist id="quote-product-options">
-              {products.map((product: QuoteProductOption) => (
-                <option
-                  key={product.sku}
-                  value={`${product.title} | ${product.sku} | ${product.vendor}`}
-                />
-              ))}
-            </datalist>
-
             <div style={{ display: "grid", gap: "16px" }}>
-              {lines.map((line, index) => (
-                <div
-                  key={index}
-                  style={{
-                    border: "1px solid #1f2937",
-                    background: "rgba(2, 6, 23, 0.72)",
-                    borderRadius: "16px",
-                    padding: "16px",
-                    display: "grid",
-                    gap: "12px",
-                  }}
-                >
+              {lines.map((line, index) => {
+                const selectedProduct = products.find(
+                  (p: QuoteProductOption) => p.sku === line.sku,
+                );
+                const matches = filteredProducts(index);
+
+                return (
                   <div
+                    key={index}
                     style={{
+                      border: "1px solid #1f2937",
+                      background: "rgba(2, 6, 23, 0.72)",
+                      borderRadius: "16px",
+                      padding: "16px",
                       display: "grid",
-                      gridTemplateColumns: "minmax(340px, 1fr) 160px 120px",
                       gap: "12px",
-                      alignItems: "end",
                     }}
                   >
-                    <div>
-                      <label style={styles.label}>Product</label>
-                      <input
-                        list="quote-product-options"
-                        value={line.search}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          const match = products.find(
-                            (product) =>
-                              `${product.title} | ${product.sku} | ${product.vendor}` === value,
-                          );
-
-                          updateLine(index, {
-                            search: value,
-                            sku: match?.sku || "",
-                          });
-                        }}
-                        placeholder="Search product, SKU, or vendor"
-                        style={styles.input}
-                      />
-                    </div>
-
-                    <div>
-                      <label style={styles.label}>Quantity</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={line.quantity}
-                        onChange={(e) =>
-                          updateLine(index, { quantity: e.target.value })
-                        }
-                        style={styles.input}
-                      />
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => removeLine(index)}
-                      disabled={lines.length === 1}
-                      style={styles.buttonGhost}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(360px, 1fr) 160px 120px",
+                        gap: "12px",
+                        alignItems: "end",
+                      }}
                     >
-                      Remove
-                    </button>
-                  </div>
+                      <div>
+                        <label style={styles.label}>Search Product</label>
+                        <input
+                          type="text"
+                          value={line.search}
+                          onChange={(e) =>
+                            updateLine(index, {
+                              search: e.target.value,
+                              sku: "",
+                            })
+                          }
+                          placeholder="Type product name, SKU, or vendor"
+                          style={styles.input}
+                        />
+                      </div>
 
-                  <div
-                    style={{
-                      padding: "12px 14px",
-                      borderRadius: "12px",
-                      background: line.sku
-                        ? "rgba(37, 99, 235, 0.12)"
-                        : "rgba(148, 163, 184, 0.08)",
-                      border: line.sku
-                        ? "1px solid rgba(96, 165, 250, 0.35)"
-                        : "1px solid rgba(71, 85, 105, 0.4)",
-                      color: line.sku ? "#dbeafe" : "#94a3b8",
-                      fontSize: "14px",
-                    }}
-                  >
-                    {line.sku ? `Selected SKU: ${line.sku}` : "No product selected yet"}
+                      <div>
+                        <label style={styles.label}>Quantity</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={line.quantity}
+                          onChange={(e) =>
+                            updateLine(index, { quantity: e.target.value })
+                          }
+                          style={styles.input}
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => removeLine(index)}
+                        disabled={lines.length === 1}
+                        style={styles.buttonGhost}
+                      >
+                        Remove
+                      </button>
+                    </div>
+
+                    {selectedProduct ? (
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 12,
+                          padding: "12px 14px",
+                          borderRadius: "12px",
+                          background: "rgba(37, 99, 235, 0.12)",
+                          border: "1px solid rgba(96, 165, 250, 0.35)",
+                          color: "#dbeafe",
+                        }}
+                      >
+                        {selectedProduct.imageUrl ? (
+                          <img
+                            src={selectedProduct.imageUrl}
+                            alt={selectedProduct.title}
+                            style={{
+                              width: 52,
+                              height: 52,
+                              objectFit: "cover",
+                              borderRadius: 8,
+                              border: "1px solid rgba(255,255,255,0.08)",
+                              flexShrink: 0,
+                            }}
+                          />
+                        ) : (
+                          <div
+                            style={{
+                              width: 52,
+                              height: 52,
+                              borderRadius: 8,
+                              background: "#1e293b",
+                              border: "1px solid #334155",
+                              flexShrink: 0,
+                            }}
+                          />
+                        )}
+
+                        <div>
+                          <div style={{ fontWeight: 700 }}>
+                            {selectedProduct.title}
+                          </div>
+                          <div style={{ fontSize: 13, color: "#bfdbfe" }}>
+                            {selectedProduct.sku} — {selectedProduct.vendor}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {!selectedProduct && line.search.trim() ? (
+                      <div
+                        style={{
+                          border: "1px solid #334155",
+                          borderRadius: "14px",
+                          maxHeight: "280px",
+                          overflowY: "auto",
+                          background: "#020617",
+                        }}
+                      >
+                        {matches.length === 0 ? (
+                          <div style={{ padding: "14px", color: "#94a3b8" }}>
+                            No matching products
+                          </div>
+                        ) : (
+                          matches.map((product: QuoteProductOption) => (
+                            <button
+                              key={product.sku}
+                              type="button"
+                              onClick={() =>
+                                updateLine(index, {
+                                  sku: product.sku,
+                                  search: `${product.title} (${product.sku}) — ${product.vendor}`,
+                                })
+                              }
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 12,
+                                width: "100%",
+                                textAlign: "left",
+                                padding: "14px",
+                                border: "none",
+                                borderBottom: "1px solid #111827",
+                                background: "transparent",
+                                color: "#f8fafc",
+                                cursor: "pointer",
+                              }}
+                            >
+                              {product.imageUrl ? (
+                                <img
+                                  src={product.imageUrl}
+                                  alt={product.title}
+                                  style={{
+                                    width: 44,
+                                    height: 44,
+                                    objectFit: "cover",
+                                    borderRadius: 8,
+                                    border: "1px solid rgba(255,255,255,0.08)",
+                                    flexShrink: 0,
+                                  }}
+                                />
+                              ) : (
+                                <div
+                                  style={{
+                                    width: 44,
+                                    height: 44,
+                                    borderRadius: 8,
+                                    background: "#1e293b",
+                                    border: "1px solid #334155",
+                                    flexShrink: 0,
+                                  }}
+                                />
+                              )}
+
+                              <div>
+                                <div style={{ fontWeight: 700 }}>
+                                  {product.title}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: "13px",
+                                    color: "#94a3b8",
+                                    marginTop: "4px",
+                                  }}
+                                >
+                                  {product.sku} — {product.vendor}
+                                </div>
+                              </div>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    ) : null}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -749,35 +896,13 @@ export default function PublicCustomQuotePage() {
         </Form>
 
         {actionData?.message ? (
-          <div
-            style={{
-              marginTop: 18,
-              padding: "14px 16px",
-              borderRadius: 14,
-              background: actionData.ok
-                ? "rgba(22, 163, 74, 0.15)"
-                : "rgba(220, 38, 38, 0.15)",
-              border: actionData.ok
-                ? "1px solid rgba(34, 197, 94, 0.5)"
-                : "1px solid rgba(248, 113, 113, 0.5)",
-              color: actionData.ok ? "#dcfce7" : "#fee2e2",
-            }}
-          >
+          <div style={actionData.ok ? styles.statusOk : styles.statusErr}>
             {actionData.message}
           </div>
         ) : null}
 
         {actionData?.savedQuoteId ? (
-          <div
-            style={{
-              marginTop: 18,
-              padding: "14px 16px",
-              borderRadius: 14,
-              background: "rgba(22, 163, 74, 0.15)",
-              border: "1px solid rgba(34, 197, 94, 0.5)",
-              color: "#dcfce7",
-            }}
-          >
+          <div style={styles.statusOk}>
             Quote saved successfully. ID: {actionData.savedQuoteId}
           </div>
         ) : null}
@@ -862,6 +987,40 @@ export default function PublicCustomQuotePage() {
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        ) : null}
+
+        {recentQuotes.length ? (
+          <div style={{ ...styles.card, marginTop: 24 }}>
+            <h2 style={styles.sectionTitle}>Recent Quotes</h2>
+            <div style={{ display: "grid", gap: 12 }}>
+              {recentQuotes.map((quote: any) => (
+                <div
+                  key={quote.id}
+                  style={{
+                    border: "1px solid #1f2937",
+                    borderRadius: 12,
+                    padding: 14,
+                    background: "rgba(2, 6, 23, 0.72)",
+                  }}
+                >
+                  <div style={{ fontWeight: 700 }}>
+                    {quote.customer_name || "Unnamed customer"}
+                  </div>
+                  <div style={{ color: "#93c5fd", marginTop: 4 }}>
+                    ${(quote.quote_total_cents / 100).toFixed(2)} —{" "}
+                    {quote.service_name || "Quote"}
+                  </div>
+                  <div style={{ color: "#9ca3af", marginTop: 6, fontSize: 14 }}>
+                    {quote.address1}, {quote.city}, {quote.province}{" "}
+                    {quote.postal_code}
+                  </div>
+                  <div style={{ color: "#64748b", marginTop: 6, fontSize: 12 }}>
+                    {new Date(quote.created_at).toLocaleString()}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         ) : null}

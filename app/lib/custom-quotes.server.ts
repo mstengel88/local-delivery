@@ -46,3 +46,18 @@ export async function saveCustomQuote(input: {
 
   return data;
 }
+
+export async function getRecentCustomQuotes(limit = 20) {
+  const { data, error } = await supabaseAdmin
+    .from("custom_delivery_quotes")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("[GET RECENT CUSTOM QUOTES ERROR]", error);
+    return [];
+  }
+
+  return data || [];
+}

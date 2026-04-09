@@ -4,6 +4,7 @@ export type QuoteProductOption = {
   title: string;
   sku: string;
   vendor: string;
+  imageUrl?: string;
 };
 
 export async function getProductOptionsFromShopify(
@@ -15,10 +16,16 @@ export async function getProductOptionsFromShopify(
         nodes {
           title
           vendor
+          featuredImage {
+            url
+          }
           variants(first: 50) {
             nodes {
               sku
               title
+              image {
+                url
+              }
             }
           }
         }
@@ -33,12 +40,15 @@ export async function getProductOptionsFromShopify(
   for (const product of products) {
     const vendor = product?.vendor || "";
     const productTitle = product?.title || "";
+    const productImage = product?.featuredImage?.url || "";
 
     for (const variant of product?.variants?.nodes || []) {
       const sku = (variant?.sku || "").trim();
       if (!sku) continue;
 
       const variantTitle = (variant?.title || "").trim();
+      const variantImage = variant?.image?.url || productImage || "";
+
       const title =
         variantTitle && variantTitle !== "Default Title"
           ? `${productTitle} - ${variantTitle}`
@@ -48,6 +58,7 @@ export async function getProductOptionsFromShopify(
         title,
         sku,
         vendor,
+        imageUrl: variantImage,
       });
     }
   }
@@ -64,6 +75,8 @@ export async function syncProductOptionsToSupabase(
     sku: product.sku,
     product_title: product.title,
     pickup_vendor: product.vendor,
+    image_url: product.imageUrl || null,
+    updated_at: new Date().toISOString(),
   }));
 
   const { error } = await supabaseAdmin
@@ -80,7 +93,7 @@ export async function getProductOptionsFromSupabase(): Promise<
 > {
   const { data, error } = await supabaseAdmin
     .from("product_source_map")
-    .select("sku, product_title, pickup_vendor")
+    .select("sku, product_title, pickup_vendor, image_url")
     .order("product_title", { ascending: true });
 
   if (error || !data) {
@@ -94,5 +107,6 @@ export async function getProductOptionsFromSupabase(): Promise<
       sku: row.sku,
       title: row.product_title || row.sku,
       vendor: row.pickup_vendor || "",
+      imageUrl: row.image_url || "",
     }));
 }
