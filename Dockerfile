@@ -6,14 +6,18 @@ WORKDIR /app
 ENV NPM_CONFIG_FETCH_RETRIES=5
 ENV NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000
 ENV NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
-ENV NPM_CONFIG_NETWORK_TIMEOUT=300000
+ENV NPM_CONFIG_FETCH_TIMEOUT=300000
+ENV NPM_CONFIG_AUDIT=false
+ENV NPM_CONFIG_FUND=false
 
 RUN apt-get update -y && apt-get install -y openssl
 
 COPY package*.json ./
+COPY extensions/checkout-ui/package.json ./extensions/checkout-ui/package.json
+COPY extensions/delivery-customization/package.json ./extensions/delivery-customization/package.json
 COPY prisma ./prisma
 
-RUN --mount=type=cache,target=/root/.npm npm install --legacy-peer-deps
+RUN --mount=type=cache,target=/root/.npm npm ci --legacy-peer-deps --prefer-offline --progress=false
 RUN npx prisma generate
 
 COPY . .
