@@ -14,6 +14,12 @@ import {
 } from "../lib/quote-products.server";
 import { attachAddressAutocomplete, loadGooglePlaces } from "../lib/google-places";
 
+type QuoteLine = {
+  sku: string;
+  quantity: string;
+  search: string;
+};
+
 function getSourceBreakdown(
   selectedLines: Array<{
     title: string;
@@ -124,6 +130,7 @@ export async function action({ request }: any) {
   const province = String(form.get("province") || "");
   const postalCode = String(form.get("postalCode") || "");
   const country = String(form.get("country") || "US");
+
   const rawLines = JSON.parse(String(form.get("linesJson") || "[]"));
 
   const items: Array<{
@@ -170,7 +177,7 @@ export async function action({ request }: any) {
         allowed: true,
         products,
         ok: false,
-        message: "Add at least one product line with a quantity greater than 0.",
+        message: "Add at least one product line with a valid product and quantity.",
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
       },
       { status: 400 },
@@ -328,7 +335,6 @@ const styles = {
     padding: "12px 18px",
     fontWeight: 700,
     cursor: "pointer",
-    boxShadow: "0 10px 24px rgba(37, 99, 235, 0.35)",
   } as const,
   buttonSecondary: {
     background: "#0f766e",
@@ -338,7 +344,6 @@ const styles = {
     padding: "12px 18px",
     fontWeight: 700,
     cursor: "pointer",
-    boxShadow: "0 10px 24px rgba(15, 118, 110, 0.35)",
   } as const,
   buttonGhost: {
     background: "#111827",
@@ -348,22 +353,6 @@ const styles = {
     padding: "12px 18px",
     fontWeight: 600,
     cursor: "pointer",
-  } as const,
-  statusOk: {
-    marginTop: "18px",
-    padding: "14px 16px",
-    borderRadius: "14px",
-    background: "rgba(22, 163, 74, 0.15)",
-    border: "1px solid rgba(34, 197, 94, 0.5)",
-    color: "#dcfce7",
-  } as const,
-  statusErr: {
-    marginTop: "18px",
-    padding: "14px 16px",
-    borderRadius: "14px",
-    background: "rgba(220, 38, 38, 0.15)",
-    border: "1px solid rgba(248, 113, 113, 0.5)",
-    color: "#fee2e2",
   } as const,
 };
 
@@ -378,13 +367,16 @@ export default function PublicCustomQuotePage() {
   const googleMapsApiKey =
     actionData?.googleMapsApiKey ?? loaderData.googleMapsApiKey ?? "";
 
-  const [searches, setSearches] = useState<string[]>([""]);
-  const [lines, setLines] = useState<Array<{ sku: string; quantity: string }>>([
-    { sku: "", quantity: "" },
+  const [googleStatus, setGoogleStatus] = useState("Not loaded");
+  const [lines, setLines] = useState<QuoteLine[]>([
+    { sku: "", quantity: "", search: "" },
   ]);
 
   useEffect(() => {
-    if (!allowed || !googleMapsApiKey) return;
+    if (!allowed || !googleMapsApiKey) {
+      setGoogleStatus("Missing API key");
+      return;
+    }
 
     loadGooglePlaces(googleMapsApiKey)
       .then(() => {
@@ -395,9 +387,11 @@ export default function PublicCustomQuotePage() {
           postalCodeId: "quote-postalCode",
           countryId: "quote-country",
         });
+        setGoogleStatus("Loaded");
       })
       .catch((error) => {
         console.error("[GOOGLE PLACES LOAD ERROR]", error);
+        setGoogleStatus(`Error: ${error.message}`);
       });
   }, [allowed, googleMapsApiKey]);
 
@@ -423,34 +417,18 @@ export default function PublicCustomQuotePage() {
     ].join("\n");
   }, [actionData]);
 
-  function updateLine(index: number, patch: Partial<{ sku: string; quantity: string }>) {
+  function updateLine(index: number, patch: Partial<QuoteLine>) {
     setLines((prev) =>
       prev.map((line, i) => (i === index ? { ...line, ...patch } : line)),
     );
   }
 
   function addLine() {
-    setLines((prev) => [...prev, { sku: "", quantity: "" }]);
-    setSearches((prev) => [...prev, ""]);
+    setLines((prev) => [...prev, { sku: "", quantity: "", search: "" }]);
   }
 
   function removeLine(index: number) {
     setLines((prev) => prev.filter((_, i) => i !== index));
-    setSearches((prev) => prev.filter((_, i) => i !== index));
-  }
-
-  function filteredProducts(index: number) {
-    const search = (searches[index] || "").toLowerCase().trim();
-
-    if (!search) return [];
-
-    return products
-      .filter((product: QuoteProductOption) => {
-        const haystack =
-          `${product.title} ${product.sku} ${product.vendor}`.toLowerCase();
-        return haystack.includes(search);
-      })
-      .slice(0, 25);
   }
 
   async function copyQuote() {
@@ -481,7 +459,18 @@ export default function PublicCustomQuotePage() {
               />
 
               {actionData?.loginError ? (
-                <div style={styles.statusErr}>{actionData.loginError}</div>
+                <div
+                  style={{
+                    marginTop: 18,
+                    padding: "14px 16px",
+                    borderRadius: 14,
+                    background: "rgba(220, 38, 38, 0.15)",
+                    border: "1px solid rgba(248, 113, 113, 0.5)",
+                    color: "#fee2e2",
+                  }}
+                >
+                  {actionData.loginError}
+                </div>
               ) : null}
 
               <button
@@ -508,11 +497,10 @@ export default function PublicCustomQuotePage() {
           <div>
             <h1 style={styles.title}>Custom Quote Tool</h1>
             <div style={styles.subtitle}>
-              Fast internal quoting with saved quotes, live address autocomplete,
-              product search, and source breakdown.
+              Standalone quote portal with product search and address autocomplete.
             </div>
             <div style={{ marginTop: 8, color: "#64748b", fontSize: 13 }}>
-              Loaded products: {products.length}
+              Loaded products: {products.length} · Google Places: {googleStatus}
             </div>
           </div>
 
@@ -527,7 +515,7 @@ export default function PublicCustomQuotePage() {
           <div style={styles.card}>
             <h2 style={styles.sectionTitle}>Customer & Delivery Address</h2>
             <p style={styles.sectionSub}>
-              Start typing the street address and pick a suggestion.
+              Start typing the street address. Google Places should suggest matches.
             </p>
 
             <div style={{ display: "grid", gap: "14px" }}>
@@ -636,7 +624,7 @@ export default function PublicCustomQuotePage() {
               <div>
                 <h2 style={styles.sectionTitle}>Quote Lines</h2>
                 <p style={styles.sectionSub}>
-                  Search by product, SKU, or vendor. Click a result to select it.
+                  Search products using the browser datalist. This is simpler and more reliable.
                 </p>
               </div>
 
@@ -644,6 +632,15 @@ export default function PublicCustomQuotePage() {
                 Add Line
               </button>
             </div>
+
+            <datalist id="quote-product-options">
+              {products.map((product: QuoteProductOption) => (
+                <option
+                  key={product.sku}
+                  value={`${product.title} | ${product.sku} | ${product.vendor}`}
+                />
+              ))}
+            </datalist>
 
             <div style={{ display: "grid", gap: "16px" }}>
               {lines.map((line, index) => (
@@ -667,16 +664,23 @@ export default function PublicCustomQuotePage() {
                     }}
                   >
                     <div>
-                      <label style={styles.label}>Search Product</label>
+                      <label style={styles.label}>Product</label>
                       <input
-                        type="text"
-                        value={searches[index] || ""}
-                        onChange={(e) =>
-                          setSearches((prev) =>
-                            prev.map((v, i) => (i === index ? e.target.value : v)),
-                          )
-                        }
-                        placeholder="Type product name, SKU, or vendor"
+                        list="quote-product-options"
+                        value={line.search}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          const match = products.find(
+                            (product) =>
+                              `${product.title} | ${product.sku} | ${product.vendor}` === value,
+                          );
+
+                          updateLine(index, {
+                            search: value,
+                            sku: match?.sku || "",
+                          });
+                        }}
+                        placeholder="Search product, SKU, or vendor"
                         style={styles.input}
                       />
                     </div>
@@ -705,77 +709,22 @@ export default function PublicCustomQuotePage() {
                     </button>
                   </div>
 
-                  {line.sku ? (
-                    <div
-                      style={{
-                        padding: "12px 14px",
-                        borderRadius: "12px",
-                        background: "rgba(37, 99, 235, 0.12)",
-                        border: "1px solid rgba(96, 165, 250, 0.35)",
-                        color: "#dbeafe",
-                        fontSize: "14px",
-                      }}
-                    >
-                      Selected SKU: {line.sku}
-                    </div>
-                  ) : null}
-
-                  {searches[index]?.trim() ? (
-                    <div
-                      style={{
-                        border: "1px solid #334155",
-                        borderRadius: "14px",
-                        maxHeight: "260px",
-                        overflowY: "auto",
-                        background: "#020617",
-                      }}
-                    >
-                      {filteredProducts(index).length === 0 ? (
-                        <div style={{ padding: "14px", color: "#94a3b8" }}>
-                          No matching products
-                        </div>
-                      ) : (
-                        filteredProducts(index).map((product: QuoteProductOption) => (
-                          <button
-                            key={product.sku}
-                            type="button"
-                            onClick={() => {
-                              updateLine(index, { sku: product.sku });
-                              setSearches((prev) =>
-                                prev.map((value, i) =>
-                                  i === index
-                                    ? `${product.title} (${product.sku}) — ${product.vendor}`
-                                    : value,
-                                ),
-                              );
-                            }}
-                            style={{
-                              display: "block",
-                              width: "100%",
-                              textAlign: "left",
-                              padding: "14px",
-                              border: "none",
-                              borderBottom: "1px solid #111827",
-                              background: "transparent",
-                              color: "#f8fafc",
-                              cursor: "pointer",
-                            }}
-                          >
-                            <div style={{ fontWeight: 700 }}>{product.title}</div>
-                            <div
-                              style={{
-                                fontSize: "13px",
-                                color: "#94a3b8",
-                                marginTop: "4px",
-                              }}
-                            >
-                              {product.sku} — {product.vendor}
-                            </div>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  ) : null}
+                  <div
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: "12px",
+                      background: line.sku
+                        ? "rgba(37, 99, 235, 0.12)"
+                        : "rgba(148, 163, 184, 0.08)",
+                      border: line.sku
+                        ? "1px solid rgba(96, 165, 250, 0.35)"
+                        : "1px solid rgba(71, 85, 105, 0.4)",
+                      color: line.sku ? "#dbeafe" : "#94a3b8",
+                      fontSize: "14px",
+                    }}
+                  >
+                    {line.sku ? `Selected SKU: ${line.sku}` : "No product selected yet"}
+                  </div>
                 </div>
               ))}
             </div>
@@ -803,13 +752,35 @@ export default function PublicCustomQuotePage() {
         </Form>
 
         {actionData?.message ? (
-          <div style={actionData.ok ? styles.statusOk : styles.statusErr}>
+          <div
+            style={{
+              marginTop: 18,
+              padding: "14px 16px",
+              borderRadius: 14,
+              background: actionData.ok
+                ? "rgba(22, 163, 74, 0.15)"
+                : "rgba(220, 38, 38, 0.15)",
+              border: actionData.ok
+                ? "1px solid rgba(34, 197, 94, 0.5)"
+                : "1px solid rgba(248, 113, 113, 0.5)",
+              color: actionData.ok ? "#dcfce7" : "#fee2e2",
+            }}
+          >
             {actionData.message}
           </div>
         ) : null}
 
         {actionData?.savedQuoteId ? (
-          <div style={styles.statusOk}>
+          <div
+            style={{
+              marginTop: 18,
+              padding: "14px 16px",
+              borderRadius: 14,
+              background: "rgba(22, 163, 74, 0.15)",
+              border: "1px solid rgba(34, 197, 94, 0.5)",
+              color: "#dcfce7",
+            }}
+          >
             Quote saved successfully. ID: {actionData.savedQuoteId}
           </div>
         ) : null}

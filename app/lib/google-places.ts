@@ -115,11 +115,5 @@ export function attachAddressAutocomplete(options: {
     province.value = administrativeArea;
     postalCode.value = zip;
     country.value = countryCode;
-
-    address1.dispatchEvent(new Event("input", { bubbles: true }));
-    city.dispatchEvent(new Event("input", { bubbles: true }));
-    province.dispatchEvent(new Event("input", { bubbles: true }));
-    postalCode.dispatchEvent(new Event("input", { bubbles: true }));
-    country.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
