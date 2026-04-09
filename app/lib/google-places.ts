@@ -1,22 +1,25 @@
 declare global {
   interface Window {
     google: any;
-    initQuoteAddressAutocomplete?: () => void;
   }
 }
 
+let googlePlacesPromise: Promise<void> | null = null;
+
 export function loadGooglePlaces(apiKey: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (typeof window === "undefined") {
-      reject(new Error("Window is not available"));
-      return;
-    }
+  if (typeof window === "undefined") {
+    return Promise.reject(new Error("Window is not available"));
+  }
 
-    if (window.google?.maps?.places) {
-      resolve();
-      return;
-    }
+  if (window.google?.maps?.places) {
+    return Promise.resolve();
+  }
 
+  if (googlePlacesPromise) {
+    return googlePlacesPromise;
+  }
+
+  googlePlacesPromise = new Promise((resolve, reject) => {
     const existing = document.querySelector(
       'script[data-google-places="true"]',
     ) as HTMLScriptElement | null;
@@ -37,11 +40,19 @@ export function loadGooglePlaces(apiKey: string): Promise<void> {
     script.defer = true;
     script.dataset.googlePlaces = "true";
 
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Failed to load Google Places"));
+    script.onload = () => {
+      if (window.google?.maps?.places) {
+        resolve();
+      } else {
+        reject(new Error("Google Places loaded, but places library missing"));
+      }
+    };
 
+    script.onerror = () => reject(new Error("Failed to load Google Places"));
     document.head.appendChild(script);
   });
+
+  return googlePlacesPromise;
 }
 
 export function attachAddressAutocomplete(options: {
@@ -51,7 +62,10 @@ export function attachAddressAutocomplete(options: {
   postalCodeId: string;
   countryId: string;
 }) {
-  if (typeof window === "undefined" || !window.google?.maps?.places) return;
+  if (typeof window === "undefined" || !window.google?.maps?.places) {
+    console.error("[GOOGLE PLACES] places library not available");
+    return;
+  }
 
   const address1 = document.getElementById(options.address1Id) as HTMLInputElement | null;
   const city = document.getElementById(options.cityId) as HTMLInputElement | null;
@@ -59,7 +73,10 @@ export function attachAddressAutocomplete(options: {
   const postalCode = document.getElementById(options.postalCodeId) as HTMLInputElement | null;
   const country = document.getElementById(options.countryId) as HTMLInputElement | null;
 
-  if (!address1 || !city || !province || !postalCode || !country) return;
+  if (!address1 || !city || !province || !postalCode || !country) {
+    console.error("[GOOGLE PLACES] missing address inputs");
+    return;
+  }
 
   const autocomplete = new window.google.maps.places.Autocomplete(address1, {
     types: ["address"],
@@ -88,7 +105,9 @@ export function attachAddressAutocomplete(options: {
         administrativeArea = component.short_name || component.long_name || "";
       }
       if (types.includes("postal_code")) zip = component.long_name || "";
-      if (types.includes("country")) countryCode = component.short_name || component.long_name || "US";
+      if (types.includes("country")) {
+        countryCode = component.short_name || component.long_name || "US";
+      }
     }
 
     address1.value = [streetNumber, route].filter(Boolean).join(" ").trim();
@@ -96,5 +115,11 @@ export function attachAddressAutocomplete(options: {
     province.value = administrativeArea;
     postalCode.value = zip;
     country.value = countryCode;
+
+    address1.dispatchEvent(new Event("input", { bubbles: true }));
+    city.dispatchEvent(new Event("input", { bubbles: true }));
+    province.dispatchEvent(new Event("input", { bubbles: true }));
+    postalCode.dispatchEvent(new Event("input", { bubbles: true }));
+    country.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }

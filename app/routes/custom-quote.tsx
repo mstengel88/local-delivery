@@ -12,7 +12,7 @@ import {
   getProductOptionsFromSupabase,
   type QuoteProductOption,
 } from "../lib/quote-products.server";
-import { loadGooglePlaces, attachAddressAutocomplete } from "../lib/google-places";
+import { attachAddressAutocomplete, loadGooglePlaces } from "../lib/google-places";
 
 function getSourceBreakdown(
   selectedLines: Array<{
@@ -77,7 +77,12 @@ export async function action({ request }: any) {
 
     if (!expected || password !== expected) {
       return data(
-        { allowed: false, loginError: "Invalid password", products: [] },
+        {
+          allowed: false,
+          loginError: "Invalid password",
+          products: [],
+          googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
+        },
         { status: 401 },
       );
     }
@@ -85,7 +90,11 @@ export async function action({ request }: any) {
     const products = await getProductOptionsFromSupabase();
 
     return data(
-      { allowed: true, products, googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "" },
+      {
+        allowed: true,
+        products,
+        googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
+      },
       {
         headers: {
           "Set-Cookie": await adminQuoteCookie.serialize("ok"),
@@ -97,7 +106,11 @@ export async function action({ request }: any) {
   const allowed = await hasAdminQuoteAccess(request);
   if (!allowed) {
     return data(
-      { allowed: false, loginError: "Please log in" },
+      {
+        allowed: false,
+        loginError: "Please log in",
+        googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
+      },
       { status: 401 },
     );
   }
@@ -429,9 +442,7 @@ export default function PublicCustomQuotePage() {
   function filteredProducts(index: number) {
     const search = (searches[index] || "").toLowerCase().trim();
 
-    if (!search) {
-      return products.slice(0, 25);
-    }
+    if (!search) return [];
 
     return products
       .filter((product: QuoteProductOption) => {
@@ -693,6 +704,21 @@ export default function PublicCustomQuotePage() {
                       Remove
                     </button>
                   </div>
+
+                  {line.sku ? (
+                    <div
+                      style={{
+                        padding: "12px 14px",
+                        borderRadius: "12px",
+                        background: "rgba(37, 99, 235, 0.12)",
+                        border: "1px solid rgba(96, 165, 250, 0.35)",
+                        color: "#dbeafe",
+                        fontSize: "14px",
+                      }}
+                    >
+                      Selected SKU: {line.sku}
+                    </div>
+                  ) : null}
 
                   {searches[index]?.trim() ? (
                     <div
