@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { data, redirect } from "react-router";
-import { getQuote } from "../lib/quote-engine.server";
 import {
   getRecentCustomQuotes,
   saveCustomQuote,
@@ -16,6 +15,7 @@ import {
   type QuoteProductOption,
 } from "../lib/quote-products.server";
 import { attachAddressAutocomplete, loadGooglePlaces } from "../lib/google-places";
+import { getQuote } from "../lib/quote-engine.server";
 
 type QuoteLine = {
   sku: string;
@@ -137,48 +137,33 @@ export async function action({ request }: any) {
   const province = String(form.get("province") || "");
   const postalCode = String(form.get("postalCode") || "");
   const country = String(form.get("country") || "US");
-
   const rawLines = JSON.parse(String(form.get("linesJson") || "[]"));
 
-  const items: Array<{
-    sku?: string;
-    quantity: number;
-    requiresShipping?: boolean;
-    pickupVendor?: string;
-  }> = [];
+  const selectedProducts = rawLines
+    .map((line: any) => {
+      const sku = String(line?.sku || "").trim();
+      const quantity = Number(line?.quantity || 0);
+      const product = products.find((p) => p.sku === sku);
 
-  const selectedLines: Array<{
+      if (!sku || quantity <= 0 || !product) return null;
+
+      return {
+        title: product.title,
+        sku: product.sku,
+        vendor: product.vendor,
+        quantity,
+        price: product.price || 0,
+      };
+    })
+    .filter(Boolean) as Array<{
     title: string;
     sku: string;
     vendor: string;
     quantity: number;
-  }> = [];
+    price: number;
+  }>;
 
-  for (const rawLine of rawLines) {
-    const sku = String(rawLine?.sku || "").trim();
-    const quantity = Number(rawLine?.quantity || 0);
-
-    if (!sku || quantity <= 0) continue;
-
-    const product = products.find((p) => p.sku === sku);
-    if (!product) continue;
-
-    items.push({
-      sku: product.sku,
-      quantity,
-      requiresShipping: true,
-      pickupVendor: product.vendor,
-    });
-
-    selectedLines.push({
-      title: product.title,
-      sku: product.sku,
-      vendor: product.vendor,
-      quantity,
-    });
-  }
-
-  if (items.length === 0) {
+  if (selectedProducts.length === 0) {
     return data(
       {
         allowed: true,
@@ -209,7 +194,7 @@ export async function action({ request }: any) {
 
   const shop = process.env.SHOPIFY_STORE_DOMAIN || "darfaz-2e.myshopify.com";
 
-  const quote = await getQuote({
+  const deliveryQuote = await getQuote({
     shop,
     postalCode,
     country,
@@ -217,10 +202,29 @@ export async function action({ request }: any) {
     city,
     address1,
     address2,
-    items,
+    items: selectedProducts.map((item) => ({
+      sku: item.sku,
+      quantity: item.quantity,
+      requiresShipping: true,
+      pickupVendor: item.vendor,
+      price: item.price,
+    })),
   });
 
-  const sourceBreakdown = getSourceBreakdown(selectedLines);
+  const productsSubtotal = selectedProducts.reduce(
+    (sum, item) => sum + Number(item.price || 0) * item.quantity,
+    0,
+  );
+
+  const deliveryAmount = Number(deliveryQuote.cents || 0) / 100;
+  const taxableSubtotal = productsSubtotal + deliveryAmount;
+
+  const taxRate = Number(process.env.QUOTE_TAX_RATE || "0");
+  const taxAmount = taxableSubtotal * taxRate;
+  const totalAmount = taxableSubtotal + taxAmount;
+
+  const sourceBreakdown = getSourceBreakdown(selectedProducts);
+
   let savedQuoteId: string | null = null;
 
   if (intent === "save") {
@@ -233,13 +237,13 @@ export async function action({ request }: any) {
       province,
       postalCode,
       country,
-      quoteTotalCents: quote.cents,
-      serviceName: quote.serviceName,
-      description: quote.description,
-      eta: quote.eta,
-      summary: quote.summary,
+      quoteTotalCents: Math.round(totalAmount * 100),
+      serviceName: deliveryQuote.serviceName,
+      description: deliveryQuote.description,
+      eta: deliveryQuote.eta,
+      summary: deliveryQuote.summary,
       sourceBreakdown,
-      lineItems: selectedLines,
+      lineItems: selectedProducts,
     });
 
     savedQuoteId = saved.id;
@@ -250,13 +254,20 @@ export async function action({ request }: any) {
     products,
     recentQuotes,
     ok: true,
-    quote,
-    selectedLines,
-    sourceBreakdown,
-    savedQuoteId,
     customerName,
     address: { address1, address2, city, province, postalCode, country },
     googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
+    savedQuoteId,
+    selectedLines: selectedProducts,
+    sourceBreakdown,
+    pricing: {
+      productsSubtotal,
+      deliveryAmount,
+      taxRate,
+      taxAmount,
+      totalAmount,
+    },
+    deliveryQuote,
   });
 }
 
@@ -427,22 +438,27 @@ export default function PublicCustomQuotePage() {
   }, [allowed, googleMapsApiKey]);
 
   const quoteText = useMemo(() => {
-    if (!actionData?.quote) return "";
+    if (!actionData?.pricing || !actionData?.deliveryQuote) return "";
 
     const linesText =
       actionData.selectedLines
         ?.map(
           (line: any) =>
-            `${line.title} (${line.sku}) x ${line.quantity} — ${line.vendor}`,
+            `${line.title} (${line.sku}) x ${line.quantity} — $${(
+              Number(line.price || 0) * line.quantity
+            ).toFixed(2)}`,
         )
         .join("\n") || "";
 
     return [
-      `Service: ${actionData.quote.serviceName}`,
-      `Price: $${(actionData.quote.cents / 100).toFixed(2)}`,
-      `Description: ${actionData.quote.description}`,
-      `ETA: ${actionData.quote.eta}`,
-      `Summary: ${actionData.quote.summary}`,
+      `Customer: ${actionData.customerName || ""}`,
+      `Products Subtotal: $${Number(actionData.pricing.productsSubtotal).toFixed(2)}`,
+      `Delivery: $${Number(actionData.pricing.deliveryAmount).toFixed(2)}`,
+      `Tax: $${Number(actionData.pricing.taxAmount).toFixed(2)}`,
+      `TOTAL: $${Number(actionData.pricing.totalAmount).toFixed(2)}`,
+      `Delivery Service: ${actionData.deliveryQuote.serviceName}`,
+      `ETA: ${actionData.deliveryQuote.eta}`,
+      `Summary: ${actionData.deliveryQuote.summary}`,
       "",
       linesText,
     ].join("\n");
@@ -530,8 +546,8 @@ export default function PublicCustomQuotePage() {
           <div>
             <h1 style={styles.title}>Custom Quote Tool</h1>
             <div style={styles.subtitle}>
-              Standalone quote portal with product images, customer history, and
-              address autocomplete.
+              Full quote builder with products, delivery, tax, images, and saved
+              history.
             </div>
             <div style={{ marginTop: 8, color: "#64748b", fontSize: 13 }}>
               Loaded products: {products.length} · Google Places: {googleStatus}
@@ -780,6 +796,10 @@ export default function PublicCustomQuotePage() {
                           <div style={{ fontSize: 13, color: "#bfdbfe" }}>
                             {selectedProduct.sku} — {selectedProduct.vendor}
                           </div>
+                          <div style={{ fontSize: 13, color: "#bfdbfe" }}>
+                            Unit Price: $
+                            {Number(selectedProduct.price || 0).toFixed(2)}
+                          </div>
                         </div>
                       </div>
                     ) : null}
@@ -862,6 +882,16 @@ export default function PublicCustomQuotePage() {
                                 >
                                   {product.sku} — {product.vendor}
                                 </div>
+                                <div
+                                  style={{
+                                    fontSize: "13px",
+                                    color: "#94a3b8",
+                                    marginTop: "4px",
+                                  }}
+                                >
+                                  $
+                                  {Number(product.price || 0).toFixed(2)}
+                                </div>
                               </div>
                             </button>
                           ))
@@ -881,7 +911,7 @@ export default function PublicCustomQuotePage() {
               value="quote"
               style={styles.buttonPrimary}
             >
-              {isSubmitting ? "Calculating..." : "Get Quote"}
+              {isSubmitting ? "Calculating..." : "Get Full Quote"}
             </button>
 
             <button
@@ -907,7 +937,7 @@ export default function PublicCustomQuotePage() {
           </div>
         ) : null}
 
-        {actionData?.quote ? (
+        {actionData?.pricing && actionData?.deliveryQuote ? (
           <div
             style={{
               marginTop: "24px",
@@ -926,7 +956,9 @@ export default function PublicCustomQuotePage() {
                   marginBottom: "16px",
                 }}
               >
-                <h2 style={{ ...styles.sectionTitle, margin: 0 }}>Quote Result</h2>
+                <h2 style={{ ...styles.sectionTitle, margin: 0 }}>
+                  Full Quote Result
+                </h2>
                 <button type="button" onClick={copyQuote} style={styles.buttonGhost}>
                   Copy Quote
                 </button>
@@ -934,24 +966,44 @@ export default function PublicCustomQuotePage() {
 
               <div style={{ display: "grid", gap: "10px", color: "#e5e7eb" }}>
                 <div>
-                  <strong style={{ color: "#93c5fd" }}>Service:</strong>{" "}
-                  {actionData.quote.serviceName}
+                  <strong style={{ color: "#93c5fd" }}>Products:</strong> $
+                  {Number(actionData.pricing.productsSubtotal).toFixed(2)}
                 </div>
                 <div>
-                  <strong style={{ color: "#93c5fd" }}>Price:</strong>{" "}
-                  ${(actionData.quote.cents / 100).toFixed(2)}
+                  <strong style={{ color: "#93c5fd" }}>Delivery:</strong> $
+                  {Number(actionData.pricing.deliveryAmount).toFixed(2)}
                 </div>
                 <div>
-                  <strong style={{ color: "#93c5fd" }}>Description:</strong>{" "}
-                  {actionData.quote.description}
+                  <strong style={{ color: "#93c5fd" }}>Tax:</strong> $
+                  {Number(actionData.pricing.taxAmount).toFixed(2)}
+                </div>
+                <div
+                  style={{
+                    marginTop: 8,
+                    paddingTop: 10,
+                    borderTop: "1px solid #334155",
+                    fontSize: 18,
+                    fontWeight: 800,
+                  }}
+                >
+                  TOTAL: ${Number(actionData.pricing.totalAmount).toFixed(2)}
+                </div>
+
+                <div style={{ marginTop: 14 }}>
+                  <strong style={{ color: "#93c5fd" }}>Delivery Service:</strong>{" "}
+                  {actionData.deliveryQuote.serviceName}
                 </div>
                 <div>
                   <strong style={{ color: "#93c5fd" }}>ETA:</strong>{" "}
-                  {actionData.quote.eta}
+                  {actionData.deliveryQuote.eta}
                 </div>
                 <div>
                   <strong style={{ color: "#93c5fd" }}>Summary:</strong>{" "}
-                  {actionData.quote.summary}
+                  {actionData.deliveryQuote.summary}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Notes:</strong>{" "}
+                  {actionData.deliveryQuote.description}
                 </div>
               </div>
             </div>

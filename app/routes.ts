@@ -22,6 +22,7 @@ export default [
   route("app/api/shipping-estimate", "routes/app.api.shipping-estimate.ts"),
   route("app/api/carrier-service", "routes/app.api.carrier-service.ts"),
 
+  route("webhooks/products/update", "routes/webhooks.products.update.ts"),
   route("webhooks/app/scopes_update", "routes/webhooks.app.scopes_update.tsx"),
   route("webhooks/app/uninstalled", "routes/webhooks.app.uninstalled.tsx"),
 ] satisfies RouteConfig;

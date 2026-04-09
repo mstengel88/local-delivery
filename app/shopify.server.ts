@@ -53,6 +53,22 @@ const shopify = shopifyApp({
             }
           }
         `);
+      await admin.graphql(`
+      mutation {
+        webhookSubscriptionCreate(
+          topic: PRODUCTS_UPDATE,
+          webhookSubscription: {
+            callbackUrl: "https://app.ghstickets.com/webhooks/products/update",
+            format: JSON
+          }
+        ) {
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+`);
 
         const json = await response.json();
         const products = json?.data?.products?.nodes || [];
