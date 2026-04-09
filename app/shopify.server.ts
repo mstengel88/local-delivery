@@ -42,10 +42,8 @@ const shopify = shopifyApp({
                 }
                 variants(first: 50) {
                   nodes {
-                    id
                     sku
                     title
-                    price
                     image {
                       url
                     }
@@ -77,10 +75,8 @@ const shopify = shopifyApp({
         const options: Array<{
           title: string;
           sku: string;
-          variantId: string;
           vendor: string;
           imageUrl?: string;
-          price?: number;
         }> = [];
 
         for (const product of products) {
@@ -103,13 +99,8 @@ const shopify = shopifyApp({
             options.push({
               title,
               sku,
-              variantId: variant?.id || "",
               vendor,
               imageUrl: variantImage,
-              price:
-                variant?.price === null || variant?.price === undefined
-                  ? undefined
-                  : Number(variant.price),
             });
           }
         }
