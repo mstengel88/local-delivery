@@ -1,29 +1,25 @@
 import { data } from "react-router";
 import { authenticate } from "../shopify.server";
-import { supabase } from "../lib/supabase.server";
+import { supabaseAdmin } from "../lib/supabase.server";
 
 export async function action({ request }: any) {
   const { admin } = await authenticate.admin(request);
 
   const response = await admin.graphql(`
-    {
-      products(first: 50) {
-        edges {
-          node {
-            title
-            vendor
-            images(first: 1) {
-              edges {
-                node {
-                  url
-                }
-              }
-            }
-            variants(first: 10) {
-              edges {
-                node {
-                  sku
-                }
+    query SyncProductsForQuotes {
+      products(first: 100, sortKey: TITLE) {
+        nodes {
+          title
+          vendor
+          featuredImage {
+            url
+          }
+          variants(first: 50) {
+            nodes {
+              sku
+              title
+              image {
+                url
               }
             }
           }
@@ -33,28 +29,49 @@ export async function action({ request }: any) {
   `);
 
   const json = await response.json();
+  const products = json?.data?.products?.nodes || [];
 
-  const products = json.data.products.edges;
+  let variantCount = 0;
 
-  for (const p of products) {
-    const title = p.node.title;
-    const vendor = p.node.vendor;
-    const imageUrl =
-      p.node.images.edges[0]?.node.url || null;
+  for (const product of products) {
+    const productTitle = product?.title || "";
+    const vendor = product?.vendor || "";
+    const productImage = product?.featuredImage?.url || "";
 
-    for (const v of p.node.variants.edges) {
-      const sku = v.node.sku;
+    for (const variant of product?.variants?.nodes || []) {
+      const sku = (variant?.sku || "").trim();
       if (!sku) continue;
 
-      await supabase.from("product_source_map").upsert({
-        sku,
-        product_title: title,
-        pickup_vendor: vendor,
-        image_url: imageUrl,
-        updated_at: new Date().toISOString(),
-      });
+      const variantTitle = (variant?.title || "").trim();
+      const imageUrl = variant?.image?.url || productImage || "";
+
+      const title =
+        variantTitle && variantTitle !== "Default Title"
+          ? `${productTitle} - ${variantTitle}`
+          : productTitle;
+
+      const { error } = await supabaseAdmin.from("product_source_map").upsert(
+        {
+          sku,
+          product_title: title,
+          pickup_vendor: vendor,
+          image_url: imageUrl || null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "sku" },
+      );
+
+      if (error) {
+        console.error("[SYNC PRODUCTS UPSERT ERROR]", error);
+      } else {
+        variantCount += 1;
+      }
     }
   }
 
-  return data({ ok: true, count: products.length });
+  return data({
+    ok: true,
+    productCount: products.length,
+    variantCount,
+  });
 }
