@@ -32,6 +32,7 @@ export default function AppLayout() {
         <Link to={`/app${qs}`}>Dashboard</Link>
         <Link to={`/app/admin${qs}`}>Admin</Link>
         <Link to={`/app/custom-quote${qs}`}>Custom Quote</Link>
+        <a href="/custom-quote" target="_blank" rel="noreferrer">Quote Portal</a>
       </nav>
 
       <Outlet />

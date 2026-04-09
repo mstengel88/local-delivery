@@ -11,6 +11,7 @@ export default [
     route("admin", "routes/app.admin.tsx"),
     route("additional", "routes/app.additional.tsx"),
     route("custom-quote", "routes/app.custom-quote.tsx"),
+    route("custom-quote", "routes/custom-quote.tsx"),
   ]),
 
   route("api/shipping-estimate", "routes/api.shipping-estimate.ts"),
