@@ -3,6 +3,8 @@ import { type RouteConfig, index, route } from "@react-router/dev/routes";
 export default [
   index("routes/_index/route.tsx"),
 
+  route("custom-quote", "routes/custom-quote.tsx"),
+
   route("auth/login", "routes/auth.login/route.tsx"),
   route("auth/*", "routes/auth.$.tsx"),
 
@@ -11,7 +13,6 @@ export default [
     route("admin", "routes/app.admin.tsx"),
     route("additional", "routes/app.additional.tsx"),
     route("custom-quote", "routes/app.custom-quote.tsx"),
-    route("custom-quote", "routes/custom-quote.tsx"),
   ]),
 
   route("api/shipping-estimate", "routes/api.shipping-estimate.ts"),
