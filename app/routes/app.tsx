@@ -27,12 +27,15 @@ export default function AppLayout() {
           gap: "16px",
           padding: "16px",
           borderBottom: "1px solid #e5e7eb",
+          alignItems: "center",
         }}
       >
         <Link to={`/app${qs}`}>Dashboard</Link>
         <Link to={`/app/admin${qs}`}>Admin</Link>
         <Link to={`/app/custom-quote${qs}`}>Custom Quote</Link>
-        <a href="/custom-quote" target="_blank" rel="noreferrer">Quote Portal</a>
+        <a href="/custom-quote" target="_blank" rel="noreferrer">
+          Quote Portal
+        </a>
       </nav>
 
       <Outlet />
