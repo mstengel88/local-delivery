@@ -30,11 +30,7 @@ function getSourceBreakdown(
 ) {
   const grouped = new Map<
     string,
-    {
-      vendor: string;
-      quantity: number;
-      items: string[];
-    }
+    { vendor: string; quantity: number; items: string[] }
   >();
 
   for (const line of selectedLines) {
@@ -177,7 +173,7 @@ export async function action({ request }: any) {
         allowed: true,
         products,
         ok: false,
-        message: "Add at least one product line with a valid product and quantity.",
+        message: "Add at least one product line with a selected product and quantity greater than 0.",
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
       },
       { status: 400 },
@@ -373,7 +369,8 @@ export default function PublicCustomQuotePage() {
   ]);
 
   useEffect(() => {
-    if (!allowed || !googleMapsApiKey) {
+    if (!allowed) return;
+    if (!googleMapsApiKey) {
       setGoogleStatus("Missing API key");
       return;
     }
@@ -624,7 +621,7 @@ export default function PublicCustomQuotePage() {
               <div>
                 <h2 style={styles.sectionTitle}>Quote Lines</h2>
                 <p style={styles.sectionSub}>
-                  Search products using the browser datalist. This is simpler and more reliable.
+                  Pick a product from the datalist, then enter quantity.
                 </p>
               </div>
 
