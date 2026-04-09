@@ -382,6 +382,9 @@ export default function AdminPage() {
                 {isSaving ? "Saving..." : "Add Rule"}
               </button>
             </Form>
+            <form method="post" action="/api/sync-products">
+  <button type="submit">Sync Shopify Products</button>
+</form>
           </div>
         </section>
       </div>
