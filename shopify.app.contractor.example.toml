@@ -1,0 +1,32 @@
+# Copy this to `shopify.app.contractor.toml` for your contractor sandbox app.
+# Use a DIFFERENT Shopify Partner app than the live Local-Delivery app.
+
+client_id = "replace-with-contractor-client-id"
+name = "Local-Delivery-Contractor"
+application_url = "https://contractor.greenhillswi.info"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2026-04"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+[access_scopes]
+scopes = "read_shipping,write_metaobject_definitions,write_metaobjects,write_products,write_shipping"
+
+[auth]
+redirect_urls = [
+  "https://contractor.greenhillswi.info/auth/callback",
+  "https://contractor.greenhillswi.info/auth/login",
+  "https://contractor.greenhillswi.info/auth/exit-iframe",
+  "https://contractor.greenhillswi.info/api/auth/callback"
+]

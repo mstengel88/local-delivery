@@ -1,0 +1,12 @@
+services:
+  local-delivery-contractor:
+    container_name: local-delivery-contractor
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: npm run start
+    env_file:
+      - .env.contractor
+    ports:
+      - "3001:3000"
+    restart: unless-stopped

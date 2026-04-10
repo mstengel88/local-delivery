@@ -14,6 +14,14 @@ import {
   getProductOptionsFromSupabase,
   type QuoteProductOption,
 } from "../lib/quote-products.server";
+import {
+  getPricingLabel,
+  getUnitPriceForProduct,
+  normalizeContractorTier,
+  normalizeQuoteAudience,
+  type ContractorTier,
+  type QuoteAudience,
+} from "../lib/quote-pricing";
 import { attachAddressAutocomplete, loadGooglePlaces } from "../lib/google-places";
 import { getQuote } from "../lib/quote-engine.server";
 
@@ -137,6 +145,9 @@ export async function action({ request }: any) {
   const province = String(form.get("province") || "");
   const postalCode = String(form.get("postalCode") || "");
   const country = String(form.get("country") || "US");
+  const quoteAudience = normalizeQuoteAudience(form.get("quoteAudience"));
+  const contractorTier = normalizeContractorTier(form.get("contractorTier"));
+  const pricingLabel = getPricingLabel(quoteAudience, contractorTier);
   const rawLines = JSON.parse(String(form.get("linesJson") || "[]"));
 
   const selectedProducts = rawLines
@@ -144,6 +155,9 @@ export async function action({ request }: any) {
       const sku = String(line?.sku || "").trim();
       const quantity = Number(line?.quantity || 0);
       const product = products.find((p) => p.sku === sku);
+      const unitPrice = product
+        ? getUnitPriceForProduct(product, quoteAudience, contractorTier)
+        : 0;
 
       if (!sku || quantity <= 0 || !product) return null;
 
@@ -152,7 +166,7 @@ export async function action({ request }: any) {
         sku: product.sku,
         vendor: product.vendor,
         quantity,
-        price: product.price || 0,
+        price: unitPrice,
       };
     })
     .filter(Boolean) as Array<{
@@ -172,6 +186,8 @@ export async function action({ request }: any) {
         ok: false,
         message:
           "Add at least one product line with a selected product and quantity greater than 0.",
+        quoteAudience,
+        contractorTier,
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
       },
       { status: 400 },
@@ -186,6 +202,8 @@ export async function action({ request }: any) {
         recentQuotes,
         ok: false,
         message: "Address 1, city, state, and ZIP are required.",
+        quoteAudience,
+        contractorTier,
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
       },
       { status: 400 },
@@ -239,11 +257,16 @@ export async function action({ request }: any) {
       country,
       quoteTotalCents: Math.round(totalAmount * 100),
       serviceName: deliveryQuote.serviceName,
-      description: deliveryQuote.description,
+      description: `${deliveryQuote.description} Pricing: ${pricingLabel}.`,
       eta: deliveryQuote.eta,
-      summary: deliveryQuote.summary,
+      summary: `${deliveryQuote.summary} Pricing: ${pricingLabel}.`,
       sourceBreakdown,
-      lineItems: selectedProducts,
+      lineItems: selectedProducts.map((product) => ({
+        ...product,
+        audience: quoteAudience,
+        contractorTier: quoteAudience === "contractor" ? contractorTier : null,
+        pricingLabel,
+      })),
     });
 
     savedQuoteId = saved.id;
@@ -261,6 +284,7 @@ export async function action({ request }: any) {
     selectedLines: selectedProducts,
     sourceBreakdown,
     pricing: {
+      pricingLabel,
       productsSubtotal,
       deliveryAmount,
       taxRate,
@@ -268,6 +292,8 @@ export async function action({ request }: any) {
       totalAmount,
     },
     deliveryQuote,
+    quoteAudience,
+    contractorTier,
   });
 }
 
@@ -378,6 +404,27 @@ const styles = {
     fontWeight: 600,
     cursor: "pointer",
   } as const,
+  tabRow: {
+    display: "flex",
+    gap: "10px",
+    flexWrap: "wrap" as const,
+    marginBottom: "18px",
+  },
+  tabButton: {
+    borderRadius: "999px",
+    padding: "10px 16px",
+    border: "1px solid #334155",
+    background: "#0f172a",
+    color: "#cbd5e1",
+    cursor: "pointer",
+    fontWeight: 700,
+  } as const,
+  tabButtonActive: {
+    background: "linear-gradient(135deg, #0f766e 0%, #115e59 100%)",
+    color: "#f0fdfa",
+    border: "1px solid #14b8a6",
+    boxShadow: "0 10px 24px rgba(20, 184, 166, 0.2)",
+  } as const,
   statusOk: {
     marginTop: "18px",
     padding: "14px 16px",
@@ -409,6 +456,12 @@ export default function PublicCustomQuotePage() {
     actionData?.googleMapsApiKey ?? loaderData.googleMapsApiKey ?? "";
 
   const [googleStatus, setGoogleStatus] = useState("Not loaded");
+  const [quoteAudience, setQuoteAudience] = useState<QuoteAudience>(
+    normalizeQuoteAudience(actionData?.quoteAudience),
+  );
+  const [contractorTier, setContractorTier] = useState<ContractorTier>(
+    normalizeContractorTier(actionData?.contractorTier),
+  );
   const [lines, setLines] = useState<QuoteLine[]>([
     { sku: "", quantity: "", search: "" },
   ]);
@@ -451,6 +504,8 @@ export default function PublicCustomQuotePage() {
         .join("\n") || "";
 
     return [
+      `Audience: ${actionData.quoteAudience === "contractor" ? "Contractor" : "Customer"}`,
+      `Pricing Tier: ${actionData.pricing.pricingLabel}`,
       `Customer: ${actionData.customerName || ""}`,
       `Products Subtotal: $${Number(actionData.pricing.productsSubtotal).toFixed(2)}`,
       `Delivery: $${Number(actionData.pricing.deliveryAmount).toFixed(2)}`,
@@ -560,7 +615,56 @@ export default function PublicCustomQuotePage() {
         </div>
 
         <Form method="post" style={{ display: "grid", gap: "22px" }}>
+          <input type="hidden" name="quoteAudience" value={quoteAudience} />
+          <input type="hidden" name="contractorTier" value={contractorTier} />
           <input type="hidden" name="linesJson" value={JSON.stringify(lines)} />
+
+          <div style={styles.card}>
+            <h2 style={styles.sectionTitle}>Quote Type</h2>
+            <p style={styles.sectionSub}>
+              Switch between standard customer pricing and contractor tier pricing.
+            </p>
+
+            <div style={styles.tabRow}>
+              <button
+                type="button"
+                onClick={() => setQuoteAudience("customer")}
+                style={{
+                  ...styles.tabButton,
+                  ...(quoteAudience === "customer" ? styles.tabButtonActive : {}),
+                }}
+              >
+                Customer
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuoteAudience("contractor")}
+                style={{
+                  ...styles.tabButton,
+                  ...(quoteAudience === "contractor" ? styles.tabButtonActive : {}),
+                }}
+              >
+                Contractor
+              </button>
+            </div>
+
+            {quoteAudience === "contractor" ? (
+              <div style={{ maxWidth: 280 }}>
+                <label style={styles.label}>Contractor Tier</label>
+                <select
+                  name="contractorTierUi"
+                  value={contractorTier}
+                  onChange={(e) =>
+                    setContractorTier(normalizeContractorTier(e.target.value))
+                  }
+                  style={styles.input}
+                >
+                  <option value="tier1">Tier 1</option>
+                  <option value="tier2">Tier 2</option>
+                </select>
+              </div>
+            ) : null}
+          </div>
 
           <div style={styles.card}>
             <h2 style={styles.sectionTitle}>Customer & Delivery Address</h2>
@@ -798,7 +902,13 @@ export default function PublicCustomQuotePage() {
                           </div>
                           <div style={{ fontSize: 13, color: "#bfdbfe" }}>
                             Unit Price: $
-                            {Number(selectedProduct.price || 0).toFixed(2)}
+                            {Number(
+                              getUnitPriceForProduct(
+                                selectedProduct,
+                                quoteAudience,
+                                contractorTier,
+                              ),
+                            ).toFixed(2)}
                           </div>
                         </div>
                       </div>
@@ -890,7 +1000,13 @@ export default function PublicCustomQuotePage() {
                                   }}
                                 >
                                   $
-                                  {Number(product.price || 0).toFixed(2)}
+                                  {Number(
+                                    getUnitPriceForProduct(
+                                      product,
+                                      quoteAudience,
+                                      contractorTier,
+                                    ),
+                                  ).toFixed(2)}
                                 </div>
                               </div>
                             </button>
@@ -965,6 +1081,10 @@ export default function PublicCustomQuotePage() {
               </div>
 
               <div style={{ display: "grid", gap: "10px", color: "#e5e7eb" }}>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Pricing:</strong>{" "}
+                  {actionData.pricing.pricingLabel}
+                </div>
                 <div>
                   <strong style={{ color: "#93c5fd" }}>Products:</strong> $
                   {Number(actionData.pricing.productsSubtotal).toFixed(2)}

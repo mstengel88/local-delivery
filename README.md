@@ -128,6 +128,62 @@ When you're ready to set up your app in production, you can follow [our deployme
 
 When you reach the step for [setting up environment variables](https://shopify.dev/docs/apps/deployment/web#set-env-vars), you also need to set the variable `NODE_ENV=production`.
 
+## Contractor Sandbox
+
+To run a contractor version of this app without disturbing the live Local Delivery Shopify app, use a separate Shopify app plus a separate env file.
+
+Files included for this:
+
+- `.env.contractor.example`
+- `docker-compose.contractor.yml`
+- `docker-compose.contractor.cloudflare.yml`
+- `shopify.app.contractor.example.toml`
+
+Recommended setup:
+
+1. Copy `.env.contractor.example` to `.env.contractor` and fill in contractor-specific values.
+2. Create a second Shopify app in the Partner dashboard for the contractor sandbox.
+3. Copy `shopify.app.contractor.example.toml` to `shopify.app.contractor.toml` and update its URLs/client id.
+4. Use a separate `DATABASE_URL` for the contractor app so sessions and app settings do not collide with production.
+5. Decide whether contractor should share Supabase data with the live app:
+   - Use the same Supabase credentials if you want shared product/quote data.
+   - Use separate Supabase credentials or tables if you want full isolation.
+6. Create a Cloudflare Tunnel for the contractor hostname and copy its token into `.env.contractor`.
+7. Run the contractor container on port `3001` plus the Cloudflare tunnel:
+
+```sh
+cp .env.contractor.example .env.contractor
+docker compose -f docker-compose.contractor.yml -f docker-compose.contractor.cloudflare.yml up --build -d
+```
+
+Notes:
+
+- This compose file maps host port `3001` to container port `3000`.
+- A separate container alone is not enough; the contractor sandbox should use separate Shopify app credentials and URLs.
+- If you want to use Shopify CLI against the contractor app locally, point the CLI at the contractor TOML file rather than `shopify.app.toml`.
+- Recommended hostname: `contractor.greenhillswi.info`
+- Set `SHOPIFY_APP_URL` and `APP_URL` in `.env.contractor` to the exact Cloudflare hostname.
+- Set `HOST=0.0.0.0` in `.env.contractor` so the app listens correctly inside Docker.
+- Update the contractor Shopify app config to the same hostname before installing the app.
+
+### Cloudflare Tunnel Steps
+
+1. In Cloudflare Zero Trust, create a named tunnel for the contractor app.
+2. Add a public hostname such as `contractor.greenhillswi.info`.
+3. Point that hostname to `http://local-delivery-contractor:3000` inside the tunnel setup.
+4. Copy the tunnel token into `CLOUDFLARE_TUNNEL_TOKEN` in `.env.contractor`.
+5. Start both services:
+
+```sh
+docker compose -f docker-compose.contractor.yml -f docker-compose.contractor.cloudflare.yml up --build -d
+```
+
+To view logs:
+
+```sh
+docker compose -f docker-compose.contractor.yml -f docker-compose.contractor.cloudflare.yml logs -f
+```
+
 ## Gotchas / Troubleshooting
 
 ### Database tables don't exist

@@ -1,0 +1,10 @@
+services:
+  cloudflared-contractor:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-contractor
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - local-delivery-contractor
+    env_file:
+      - .env.contractor
+    restart: unless-stopped
