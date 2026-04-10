@@ -1,10 +1,29 @@
-import { Outlet, Link, useLocation, Form } from "react-router";
+import { Outlet, Link, useLoaderData, useLocation, Form } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { data } from "react-router";
 import { authenticate } from "../shopify.server";
+import {
+  ensureProductOptionsFresh,
+  getLatestProductSyncTimestamp,
+} from "../lib/quote-products.server";
 
 export async function loader({ request }: any) {
-  await authenticate.admin(request);
-  return null;
+  const { admin } = await authenticate.admin(request);
+  try {
+    const syncStatus = await ensureProductOptionsFresh(admin);
+    return data({
+      lastProductSyncAt: syncStatus.lastUpdatedAt,
+      justSynced: syncStatus.synced,
+      syncedCount: syncStatus.syncedCount,
+    });
+  } catch (error) {
+    console.error("[AUTO PRODUCT SYNC ERROR]", error);
+    return data({
+      lastProductSyncAt: await getLatestProductSyncTimestamp(),
+      justSynced: false,
+      syncedCount: 0,
+    });
+  }
 }
 
 export function ErrorBoundary() {
@@ -16,8 +35,12 @@ export const headers = (headersArgs: any) => {
 };
 
 export default function AppLayout() {
+  const loaderData = useLoaderData<typeof loader>();
   const location = useLocation();
   const qs = location.search || "";
+  const lastSyncLabel = loaderData?.lastProductSyncAt
+    ? new Date(loaderData.lastProductSyncAt).toLocaleString()
+    : "Never";
 
   return (
     <div
@@ -99,8 +122,25 @@ export default function AppLayout() {
         <Form
           method="post"
           action={`/api/sync-products${qs}`}
-          style={{ marginLeft: "auto" }}
+          style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}
         >
+          <div
+            style={{
+              padding: "8px 12px",
+              borderRadius: "999px",
+              border: "1px solid #334155",
+              background: loaderData?.justSynced ? "rgba(22, 163, 74, 0.16)" : "#0f172a",
+              color: loaderData?.justSynced ? "#86efac" : "#cbd5e1",
+              fontSize: 12,
+              lineHeight: 1.2,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {loaderData?.justSynced ? "Auto-synced now" : "Product sync"}
+            <span style={{ color: "#94a3b8", marginLeft: 6 }}>
+              {lastSyncLabel}
+            </span>
+          </div>
           <button
             type="submit"
             style={{

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { data, redirect } from "react-router";
 import {
@@ -29,6 +29,38 @@ type QuoteLine = {
   sku: string;
   quantity: string;
   search: string;
+};
+
+type SavedQuoteRecord = {
+  id: string;
+  customer_name?: string | null;
+  address1?: string | null;
+  address2?: string | null;
+  city?: string | null;
+  province?: string | null;
+  postal_code?: string | null;
+  country?: string | null;
+  quote_total_cents: number;
+  service_name?: string | null;
+  description?: string | null;
+  eta?: string | null;
+  summary?: string | null;
+  source_breakdown?: Array<{
+    vendor: string;
+    quantity: number;
+    items: string[];
+  }> | null;
+  line_items?: Array<{
+    title: string;
+    sku: string;
+    quantity: number;
+    vendor?: string;
+    price?: number;
+    pricingLabel?: string;
+    audience?: string;
+    contractorTier?: string | null;
+  }> | null;
+  created_at: string;
 };
 
 function getSourceBreakdown(
@@ -451,7 +483,9 @@ export default function PublicCustomQuotePage() {
 
   const allowed = actionData?.allowed ?? loaderData.allowed;
   const products = actionData?.products ?? loaderData.products ?? [];
-  const recentQuotes = actionData?.recentQuotes ?? loaderData.recentQuotes ?? [];
+  const recentQuotes = (actionData?.recentQuotes ??
+    loaderData.recentQuotes ??
+    []) as SavedQuoteRecord[];
   const googleMapsApiKey =
     actionData?.googleMapsApiKey ?? loaderData.googleMapsApiKey ?? "";
 
@@ -465,6 +499,18 @@ export default function PublicCustomQuotePage() {
   const [lines, setLines] = useState<QuoteLine[]>([
     { sku: "", quantity: "", search: "" },
   ]);
+  const [selectedHistoryQuoteId, setSelectedHistoryQuoteId] = useState<string | null>(
+    null,
+  );
+  const deferredLines = useDeferredValue(lines);
+  const productSearchIndex = useMemo(
+    () =>
+      products.map((product: QuoteProductOption) => ({
+        product,
+        haystack: `${product.title} ${product.sku} ${product.vendor}`.toLowerCase(),
+      })),
+    [products],
+  );
 
   useEffect(() => {
     if (!allowed) return;
@@ -519,6 +565,36 @@ export default function PublicCustomQuotePage() {
     ].join("\n");
   }, [actionData]);
 
+  const selectedHistoryQuote = useMemo(
+    () =>
+      recentQuotes.find((quote) => quote.id === selectedHistoryQuoteId) || null,
+    [recentQuotes, selectedHistoryQuoteId],
+  );
+
+  const historyQuoteText = useMemo(() => {
+    if (!selectedHistoryQuote) return "";
+
+    const linesText =
+      selectedHistoryQuote.line_items
+        ?.map((line) => {
+          const lineTotal = Number(line.price || 0) * Number(line.quantity || 0);
+          return `${line.title} (${line.sku}) x ${line.quantity} — $${lineTotal.toFixed(2)}`;
+        })
+        .join("\n") || "";
+
+    return [
+      `Customer: ${selectedHistoryQuote.customer_name || ""}`,
+      `Address: ${selectedHistoryQuote.address1 || ""}, ${selectedHistoryQuote.city || ""}, ${selectedHistoryQuote.province || ""} ${selectedHistoryQuote.postal_code || ""}`,
+      `Total: $${(Number(selectedHistoryQuote.quote_total_cents || 0) / 100).toFixed(2)}`,
+      `Service: ${selectedHistoryQuote.service_name || ""}`,
+      `ETA: ${selectedHistoryQuote.eta || ""}`,
+      `Summary: ${selectedHistoryQuote.summary || ""}`,
+      `Notes: ${selectedHistoryQuote.description || ""}`,
+      "",
+      linesText,
+    ].join("\n");
+  }, [selectedHistoryQuote]);
+
   function updateLine(index: number, patch: Partial<QuoteLine>) {
     setLines((prev) =>
       prev.map((line, i) => (i === index ? { ...line, ...patch } : line)),
@@ -534,15 +610,12 @@ export default function PublicCustomQuotePage() {
   }
 
   function filteredProducts(index: number) {
-    const search = (lines[index]?.search || "").toLowerCase().trim();
+    const search = (deferredLines[index]?.search || "").toLowerCase().trim();
     if (!search) return [];
 
-    return products
-      .filter((product: QuoteProductOption) => {
-        const haystack =
-          `${product.title} ${product.sku} ${product.vendor}`.toLowerCase();
-        return haystack.includes(search);
-      })
+    return productSearchIndex
+      .filter((entry) => entry.haystack.includes(search))
+      .map((entry) => entry.product)
       .slice(0, 12);
   }
 
@@ -550,6 +623,12 @@ export default function PublicCustomQuotePage() {
     if (!quoteText) return;
     await navigator.clipboard.writeText(quoteText);
     alert("Quote copied");
+  }
+
+  async function copyHistoryQuote() {
+    if (!historyQuoteText) return;
+    await navigator.clipboard.writeText(historyQuoteText);
+    alert("Saved quote copied");
   }
 
   if (!allowed) {
@@ -871,6 +950,8 @@ export default function PublicCustomQuotePage() {
                           <img
                             src={selectedProduct.imageUrl}
                             alt={selectedProduct.title}
+                            loading="lazy"
+                            decoding="async"
                             style={{
                               width: 52,
                               height: 52,
@@ -957,6 +1038,8 @@ export default function PublicCustomQuotePage() {
                                 <img
                                   src={product.imageUrl}
                                   alt={product.title}
+                                  loading="lazy"
+                                  decoding="async"
                                   style={{
                                     width: 44,
                                     height: 44,
@@ -1168,13 +1251,19 @@ export default function PublicCustomQuotePage() {
             <h2 style={styles.sectionTitle}>Recent Quotes</h2>
             <div style={{ display: "grid", gap: 12 }}>
               {recentQuotes.map((quote: any) => (
-                <div
+                <button
                   key={quote.id}
+                  type="button"
+                  onClick={() => setSelectedHistoryQuoteId(quote.id)}
                   style={{
+                    textAlign: "left",
+                    width: "100%",
                     border: "1px solid #1f2937",
                     borderRadius: 12,
                     padding: 14,
                     background: "rgba(2, 6, 23, 0.72)",
+                    color: "#f8fafc",
+                    cursor: "pointer",
                   }}
                 >
                   <div style={{ fontWeight: 700 }}>
@@ -1191,8 +1280,139 @@ export default function PublicCustomQuotePage() {
                   <div style={{ color: "#64748b", marginTop: 6, fontSize: 12 }}>
                     {new Date(quote.created_at).toLocaleString()}
                   </div>
-                </div>
+                </button>
               ))}
+            </div>
+          </div>
+        ) : null}
+
+        {selectedHistoryQuote ? (
+          <div style={{ ...styles.card, marginTop: 24 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "12px",
+                marginBottom: "16px",
+              }}
+            >
+              <div>
+                <h2 style={{ ...styles.sectionTitle, margin: 0 }}>Saved Quote Detail</h2>
+                <div style={{ color: "#64748b", fontSize: 13, marginTop: 6 }}>
+                  {new Date(selectedHistoryQuote.created_at).toLocaleString()}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={copyHistoryQuote}
+                style={styles.buttonGhost}
+              >
+                Copy Saved Quote
+              </button>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1.2fr 1fr",
+                gap: "20px",
+              }}
+            >
+              <div style={{ display: "grid", gap: "10px", color: "#e5e7eb" }}>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Customer:</strong>{" "}
+                  {selectedHistoryQuote.customer_name || "Unnamed customer"}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Address:</strong>{" "}
+                  {selectedHistoryQuote.address1}, {selectedHistoryQuote.city},{" "}
+                  {selectedHistoryQuote.province} {selectedHistoryQuote.postal_code}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Total:</strong> $
+                  {(Number(selectedHistoryQuote.quote_total_cents || 0) / 100).toFixed(2)}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Service:</strong>{" "}
+                  {selectedHistoryQuote.service_name || "Quote"}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>ETA:</strong>{" "}
+                  {selectedHistoryQuote.eta || "N/A"}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Summary:</strong>{" "}
+                  {selectedHistoryQuote.summary || "N/A"}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Notes:</strong>{" "}
+                  {selectedHistoryQuote.description || "N/A"}
+                </div>
+
+                <div style={{ marginTop: 10 }}>
+                  <h3 style={{ margin: "0 0 10px 0", fontSize: 16, color: "#f8fafc" }}>
+                    Line Items
+                  </h3>
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {(selectedHistoryQuote.line_items || []).map((line, index) => (
+                      <div
+                        key={`${line.sku}-${index}`}
+                        style={{
+                          border: "1px solid #1f2937",
+                          borderRadius: 12,
+                          padding: 12,
+                          background: "rgba(2, 6, 23, 0.72)",
+                        }}
+                      >
+                        <div style={{ fontWeight: 700 }}>{line.title}</div>
+                        <div style={{ color: "#93c5fd", marginTop: 4 }}>
+                          {line.sku} · Qty {line.quantity}
+                        </div>
+                        <div style={{ color: "#9ca3af", marginTop: 4, fontSize: 14 }}>
+                          Unit ${Number(line.price || 0).toFixed(2)} · Total $
+                          {(Number(line.price || 0) * Number(line.quantity || 0)).toFixed(2)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h3 style={{ margin: "0 0 10px 0", fontSize: 16, color: "#f8fafc" }}>
+                  Source Breakdown
+                </h3>
+                <div style={{ display: "grid", gap: 12 }}>
+                  {(selectedHistoryQuote.source_breakdown || []).map((source, index) => (
+                    <div
+                      key={`${source.vendor}-${index}`}
+                      style={{
+                        border: "1px solid #1f2937",
+                        borderRadius: "12px",
+                        padding: "14px",
+                        background: "rgba(2, 6, 23, 0.72)",
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, color: "#f8fafc" }}>
+                        {source.vendor}
+                      </div>
+                      <div style={{ color: "#93c5fd", marginTop: "4px" }}>
+                        Total Qty: {source.quantity}
+                      </div>
+                      <div
+                        style={{
+                          color: "#9ca3af",
+                          marginTop: "8px",
+                          fontSize: "14px",
+                        }}
+                      >
+                        {source.items.join(", ")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         ) : null}

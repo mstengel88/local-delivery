@@ -45,6 +45,10 @@ type ShopifyAdminClient = {
   graphql: (query: string) => Promise<Response>;
 };
 
+type ProductSyncStatus = {
+  updated_at?: string | null;
+};
+
 function toNumberOrUndefined(value: unknown) {
   return value === null || value === undefined || value === ""
     ? undefined
@@ -80,6 +84,22 @@ export async function getProductOptionsFromSupabase(): Promise<
         row.contractor_tier_2_price ?? row.tier_2_price,
       ),
     }));
+}
+
+export async function getLatestProductSyncTimestamp() {
+  const { data, error } = await supabaseAdmin
+    .from("product_source_map")
+    .select("updated_at")
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[GET PRODUCT SYNC TIMESTAMP ERROR]", error);
+    return null;
+  }
+
+  return (data as ProductSyncStatus | null)?.updated_at || null;
 }
 
 export async function syncProductOptionsToSupabase(
@@ -194,4 +214,30 @@ export async function fetchProductOptionsFromShopify(admin: ShopifyAdminClient) 
   }
 
   return options.sort((a, b) => a.title.localeCompare(b.title));
+}
+
+export async function ensureProductOptionsFresh(
+  admin: ShopifyAdminClient,
+  maxAgeMs = 30 * 60 * 1000,
+) {
+  const lastUpdatedAt = await getLatestProductSyncTimestamp();
+  const isStale =
+    !lastUpdatedAt || Date.now() - new Date(lastUpdatedAt).getTime() > maxAgeMs;
+
+  if (!isStale) {
+    return {
+      synced: false,
+      syncedCount: 0,
+      lastUpdatedAt,
+    };
+  }
+
+  const products = await fetchProductOptionsFromShopify(admin);
+  await syncProductOptionsToSupabase(products);
+
+  return {
+    synced: true,
+    syncedCount: products.length,
+    lastUpdatedAt: new Date().toISOString(),
+  };
 }
