@@ -1,4 +1,4 @@
-import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
+import { Form, useActionData, useLoaderData, useLocation, useNavigation } from "react-router";
 import { data } from "react-router";
 import { authenticate } from "../shopify.server";
 import {
@@ -80,6 +80,8 @@ export default function AdminPage() {
   const { origins, rules } = useLoaderData() as any;
   const actionData = useActionData() as any;
   const navigation = useNavigation();
+  const location = useLocation();
+  const qs = location.search || "";
   const isSaving = navigation.state === "submitting";
 
   return (
@@ -382,9 +384,9 @@ export default function AdminPage() {
                 {isSaving ? "Saving..." : "Add Rule"}
               </button>
             </Form>
-            <form method="post" action="/api/sync-products">
-  <button type="submit">Sync Shopify Products</button>
-</form>
+            <Form method="post" action={`/api/sync-products${qs}`}>
+              <button type="submit">Sync Shopify Products</button>
+            </Form>
           </div>
         </section>
       </div>
