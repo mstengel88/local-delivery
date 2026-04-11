@@ -18,9 +18,10 @@ COPY extensions/delivery-customization/package.json ./extensions/delivery-custom
 COPY prisma ./prisma
 
 RUN --mount=type=cache,target=/root/.npm npm ci --legacy-peer-deps --prefer-offline --progress=false
-RUN npx prisma generate
+RUN npx prisma generate --schema=./prisma/schema.prisma
 
 COPY . .
+RUN npx prisma generate --schema=./prisma/schema.prisma
 RUN npm run build
 
 FROM node:20-slim AS runner

@@ -1,12 +1,28 @@
 services:
+  contractor-postgres:
+    image: postgres:16
+    container_name: contractor-postgres
+    environment:
+      POSTGRES_DB: local_delivery_contractor
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - contractor_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   local-delivery-contractor:
     container_name: local-delivery-contractor
     build:
       context: .
       dockerfile: Dockerfile
     command: npm run start
+    depends_on:
+      - contractor-postgres
     env_file:
       - .env.contractor
     ports:
       - "3001:3000"
     restart: unless-stopped
+
+volumes:
+  contractor_postgres_data:

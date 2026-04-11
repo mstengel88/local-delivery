@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
-import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
+import { Form, useActionData, useFetcher, useLoaderData, useLocation, useNavigation } from "react-router";
 import { data, redirect } from "react-router";
 import {
   getRecentCustomQuotes,
@@ -29,11 +29,15 @@ type QuoteLine = {
   sku: string;
   quantity: string;
   search: string;
+  customTitle?: string;
+  customPrice?: string;
 };
 
 type SavedQuoteRecord = {
   id: string;
   customer_name?: string | null;
+  customer_email?: string | null;
+  customer_phone?: string | null;
   address1?: string | null;
   address2?: string | null;
   city?: string | null;
@@ -42,6 +46,7 @@ type SavedQuoteRecord = {
   country?: string | null;
   quote_total_cents: number;
   service_name?: string | null;
+  shipping_details?: string | null;
   description?: string | null;
   eta?: string | null;
   summary?: string | null;
@@ -56,6 +61,7 @@ type SavedQuoteRecord = {
     quantity: number;
     vendor?: string;
     price?: number;
+    variantId?: string | null;
     pricingLabel?: string;
     audience?: string;
     contractorTier?: string | null;
@@ -171,6 +177,8 @@ export async function action({ request }: any) {
   const recentQuotes = await getRecentCustomQuotes(15);
 
   const customerName = String(form.get("customerName") || "");
+  const customerEmail = String(form.get("customerEmail") || "").trim();
+  const customerPhone = String(form.get("customerPhone") || "").trim();
   const address1 = String(form.get("address1") || "");
   const address2 = String(form.get("address2") || "");
   const city = String(form.get("city") || "");
@@ -180,6 +188,24 @@ export async function action({ request }: any) {
   const quoteAudience = normalizeQuoteAudience(form.get("quoteAudience"));
   const contractorTier = normalizeContractorTier(form.get("contractorTier"));
   const pricingLabel = getPricingLabel(quoteAudience, contractorTier);
+  const customDeliveryAmountInput = String(form.get("customDeliveryAmount") || "").trim();
+  const customTaxRateInput = String(form.get("customTaxRate") || "").trim();
+  const customNotes = String(form.get("customNotes") || "").trim();
+  const customShippingQuantityInput = String(form.get("customShippingQuantity") || "").trim();
+  const customShippingUnit = String(form.get("customShippingUnit") || "miles").trim() === "hours"
+    ? "hours"
+    : "miles";
+  const customShippingRateInput = String(form.get("customShippingRate") || "").trim();
+  const customDeliveryAmountValue = Number(customDeliveryAmountInput);
+  const customTaxRateValue = Number(customTaxRateInput);
+  const customShippingQuantityValue = Number(customShippingQuantityInput);
+  const customShippingRateValue = Number(customShippingRateInput);
+  const hasCustomShippingCalculation =
+    quoteAudience === "custom" &&
+    customShippingQuantityInput !== "" &&
+    customShippingRateInput !== "" &&
+    Number.isFinite(customShippingQuantityValue) &&
+    Number.isFinite(customShippingRateValue);
   const rawLines = JSON.parse(String(form.get("linesJson") || "[]"));
 
   const selectedProducts = rawLines
@@ -187,14 +213,24 @@ export async function action({ request }: any) {
       const sku = String(line?.sku || "").trim();
       const quantity = Number(line?.quantity || 0);
       const product = products.find((p) => p.sku === sku);
-      const unitPrice = product
+      const baseUnitPrice = product
         ? getUnitPriceForProduct(product, quoteAudience, contractorTier)
         : 0;
+      const overrideTitle = String(line?.customTitle || "").trim();
+      const rawCustomPrice = String(line?.customPrice || "").trim();
+      const overridePrice =
+        quoteAudience === "custom" && rawCustomPrice !== ""
+          ? Number(rawCustomPrice)
+          : null;
+      const unitPrice =
+        overridePrice !== null && Number.isFinite(overridePrice)
+          ? overridePrice
+          : baseUnitPrice;
 
       if (!sku || quantity <= 0 || !product) return null;
 
       return {
-        title: product.title,
+        title: overrideTitle || product.title,
         sku: product.sku,
         vendor: product.vendor,
         quantity,
@@ -218,8 +254,18 @@ export async function action({ request }: any) {
         ok: false,
         message:
           "Add at least one product line with a selected product and quantity greater than 0.",
+        customerName,
+        customerEmail,
+        customerPhone,
+        address: { address1, address2, city, province, postalCode, country },
         quoteAudience,
         contractorTier,
+        customDeliveryAmount: customDeliveryAmountInput,
+        customTaxRate: customTaxRateInput,
+        customShippingQuantity: customShippingQuantityInput,
+        customShippingUnit,
+        customShippingRate: customShippingRateInput,
+        customNotes,
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
       },
       { status: 400 },
@@ -234,8 +280,18 @@ export async function action({ request }: any) {
         recentQuotes,
         ok: false,
         message: "Address 1, city, state, and ZIP are required.",
+        customerName,
+        customerEmail,
+        customerPhone,
+        address: { address1, address2, city, province, postalCode, country },
         quoteAudience,
         contractorTier,
+        customDeliveryAmount: customDeliveryAmountInput,
+        customTaxRate: customTaxRateInput,
+        customShippingQuantity: customShippingQuantityInput,
+        customShippingUnit,
+        customShippingRate: customShippingRateInput,
+        customNotes,
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
       },
       { status: 400 },
@@ -267,11 +323,34 @@ export async function action({ request }: any) {
   );
 
   const deliveryAmount = Number(deliveryQuote.cents || 0) / 100;
-  const taxableSubtotal = productsSubtotal + deliveryAmount;
+  const effectiveDeliveryAmount =
+    hasCustomShippingCalculation
+      ? customShippingQuantityValue * customShippingRateValue
+      : quoteAudience === "custom" && customDeliveryAmountInput !== ""
+      ? (Number.isFinite(customDeliveryAmountValue)
+          ? customDeliveryAmountValue
+          : deliveryAmount)
+      : deliveryAmount;
+  const taxableSubtotal = productsSubtotal + effectiveDeliveryAmount;
 
-  const taxRate = Number(process.env.QUOTE_TAX_RATE || "0");
+  const taxRate =
+    quoteAudience === "custom" && customTaxRateInput !== ""
+      ? (Number.isFinite(customTaxRateValue)
+          ? customTaxRateValue
+          : Number(process.env.QUOTE_TAX_RATE || "0"))
+      : Number(process.env.QUOTE_TAX_RATE || "0");
   const taxAmount = taxableSubtotal * taxRate;
   const totalAmount = taxableSubtotal + taxAmount;
+  const effectiveServiceName = deliveryQuote.serviceName;
+  const effectiveEta = deliveryQuote.eta;
+  const effectiveSummary = deliveryQuote.summary;
+  const effectiveDescription =
+    quoteAudience === "custom" && customNotes
+      ? customNotes
+      : deliveryQuote.description;
+  const shippingCalculationText = hasCustomShippingCalculation
+    ? `${customShippingQuantityValue.toFixed(2)} ${customShippingUnit} x $${customShippingRateValue.toFixed(2)} = $${effectiveDeliveryAmount.toFixed(2)}`
+    : null;
 
   const sourceBreakdown = getSourceBreakdown(selectedProducts);
 
@@ -281,6 +360,8 @@ export async function action({ request }: any) {
     const saved = await saveCustomQuote({
       shop,
       customerName,
+      customerEmail,
+      customerPhone,
       address1,
       address2,
       city,
@@ -288,13 +369,16 @@ export async function action({ request }: any) {
       postalCode,
       country,
       quoteTotalCents: Math.round(totalAmount * 100),
-      serviceName: deliveryQuote.serviceName,
-      description: `${deliveryQuote.description} Pricing: ${pricingLabel}.`,
-      eta: deliveryQuote.eta,
-      summary: `${deliveryQuote.summary} Pricing: ${pricingLabel}.`,
+      serviceName: effectiveServiceName,
+      shippingDetails: shippingCalculationText || undefined,
+      description: `${effectiveDescription} Pricing: ${pricingLabel}.`,
+      eta: effectiveEta,
+      summary: undefined,
       sourceBreakdown,
       lineItems: selectedProducts.map((product) => ({
         ...product,
+        variantId:
+          products.find((entry) => entry.sku === product.sku)?.variantId || null,
         audience: quoteAudience,
         contractorTier: quoteAudience === "contractor" ? contractorTier : null,
         pricingLabel,
@@ -310,6 +394,8 @@ export async function action({ request }: any) {
     recentQuotes,
     ok: true,
     customerName,
+    customerEmail,
+    customerPhone,
     address: { address1, address2, city, province, postalCode, country },
     googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || "",
     savedQuoteId,
@@ -318,14 +404,28 @@ export async function action({ request }: any) {
     pricing: {
       pricingLabel,
       productsSubtotal,
-      deliveryAmount,
+      deliveryAmount: effectiveDeliveryAmount,
       taxRate,
       taxAmount,
       totalAmount,
     },
-    deliveryQuote,
+    deliveryQuote: {
+      ...deliveryQuote,
+      serviceName: effectiveServiceName,
+      eta: effectiveEta,
+      summary: effectiveSummary,
+      description: effectiveDescription,
+      cents: Math.round(effectiveDeliveryAmount * 100),
+    },
     quoteAudience,
     contractorTier,
+    customDeliveryAmount: customDeliveryAmountInput,
+    customTaxRate: customTaxRateInput,
+    customShippingQuantity: customShippingQuantityInput,
+    customShippingUnit,
+    customShippingRate: customShippingRateInput,
+    shippingCalculationText,
+    customNotes,
   });
 }
 
@@ -478,7 +578,10 @@ const styles = {
 export default function PublicCustomQuotePage() {
   const loaderData = useLoaderData<typeof loader>() as any;
   const actionData = useActionData<typeof action>() as any;
+  const draftOrderFetcher = useFetcher<any>();
+  const deleteQuoteFetcher = useFetcher<any>();
   const navigation = useNavigation();
+  const location = useLocation();
   const isSubmitting = navigation.state === "submitting";
 
   const allowed = actionData?.allowed ?? loaderData.allowed;
@@ -488,6 +591,16 @@ export default function PublicCustomQuotePage() {
     []) as SavedQuoteRecord[];
   const googleMapsApiKey =
     actionData?.googleMapsApiKey ?? loaderData.googleMapsApiKey ?? "";
+  const embeddedQs = location.search || "";
+  const isEmbeddedRoute = location.pathname.startsWith("/app/");
+  const createDraftOrderAction = location.pathname.startsWith("/app/")
+    ? `/app/api/create-draft-order${embeddedQs}`
+    : `/api/create-draft-order${embeddedQs}`;
+  const deleteQuoteAction = location.pathname.startsWith("/app/")
+    ? `/app/api/delete-quote${embeddedQs}`
+    : `/api/delete-quote${embeddedQs}`;
+  const quoteReviewHref = isEmbeddedRoute ? "/app/quote-review" : "/quote-review";
+  const logoutHref = isEmbeddedRoute ? "/app/custom-quote?logout=1" : "/custom-quote?logout=1";
 
   const [googleStatus, setGoogleStatus] = useState("Not loaded");
   const [quoteAudience, setQuoteAudience] = useState<QuoteAudience>(
@@ -497,7 +610,7 @@ export default function PublicCustomQuotePage() {
     normalizeContractorTier(actionData?.contractorTier),
   );
   const [lines, setLines] = useState<QuoteLine[]>([
-    { sku: "", quantity: "", search: "" },
+    { sku: "", quantity: "", search: "", customTitle: "", customPrice: "" },
   ]);
   const [selectedHistoryQuoteId, setSelectedHistoryQuoteId] = useState<string | null>(
     null,
@@ -536,6 +649,14 @@ export default function PublicCustomQuotePage() {
       });
   }, [allowed, googleMapsApiKey]);
 
+  useEffect(() => {
+    if (deleteQuoteFetcher.data?.ok && deleteQuoteFetcher.data?.deletedQuoteId) {
+      setSelectedHistoryQuoteId((current) =>
+        current === deleteQuoteFetcher.data.deletedQuoteId ? null : current,
+      );
+    }
+  }, [deleteQuoteFetcher.data]);
+
   const quoteText = useMemo(() => {
     if (!actionData?.pricing || !actionData?.deliveryQuote) return "";
 
@@ -550,19 +671,33 @@ export default function PublicCustomQuotePage() {
         .join("\n") || "";
 
     return [
-      `Audience: ${actionData.quoteAudience === "contractor" ? "Contractor" : "Customer"}`,
+      `Audience: ${
+        actionData.quoteAudience === "contractor"
+          ? "Contractor"
+          : actionData.quoteAudience === "custom"
+            ? "Custom"
+            : "Customer"
+      }`,
       `Pricing Tier: ${actionData.pricing.pricingLabel}`,
       `Customer: ${actionData.customerName || ""}`,
+      `Email: ${actionData.customerEmail || ""}`,
+      `Phone: ${actionData.customerPhone || ""}`,
       `Products Subtotal: $${Number(actionData.pricing.productsSubtotal).toFixed(2)}`,
-      `Delivery: $${Number(actionData.pricing.deliveryAmount).toFixed(2)}`,
+      actionData.shippingCalculationText
+        ? `Shipping Calc: ${actionData.shippingCalculationText}`
+        : `Delivery: $${Number(actionData.pricing.deliveryAmount).toFixed(2)}`,
       `Tax: $${Number(actionData.pricing.taxAmount).toFixed(2)}`,
       `TOTAL: $${Number(actionData.pricing.totalAmount).toFixed(2)}`,
       `Delivery Service: ${actionData.deliveryQuote.serviceName}`,
       `ETA: ${actionData.deliveryQuote.eta}`,
-      `Summary: ${actionData.deliveryQuote.summary}`,
+      actionData.shippingCalculationText
+        ? `Custom Shipping: ${actionData.deliveryQuote.description}`
+        : `Notes: ${actionData.deliveryQuote.description}`,
       "",
       linesText,
-    ].join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
   }, [actionData]);
 
   const selectedHistoryQuote = useMemo(
@@ -584,15 +719,22 @@ export default function PublicCustomQuotePage() {
 
     return [
       `Customer: ${selectedHistoryQuote.customer_name || ""}`,
+      `Email: ${selectedHistoryQuote.customer_email || ""}`,
+      `Phone: ${selectedHistoryQuote.customer_phone || ""}`,
       `Address: ${selectedHistoryQuote.address1 || ""}, ${selectedHistoryQuote.city || ""}, ${selectedHistoryQuote.province || ""} ${selectedHistoryQuote.postal_code || ""}`,
       `Total: $${(Number(selectedHistoryQuote.quote_total_cents || 0) / 100).toFixed(2)}`,
       `Service: ${selectedHistoryQuote.service_name || ""}`,
+      selectedHistoryQuote.shipping_details
+        ? `Shipping Details: ${selectedHistoryQuote.shipping_details}`
+        : null,
       `ETA: ${selectedHistoryQuote.eta || ""}`,
       `Summary: ${selectedHistoryQuote.summary || ""}`,
       `Notes: ${selectedHistoryQuote.description || ""}`,
       "",
       linesText,
-    ].join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
   }, [selectedHistoryQuote]);
 
   function updateLine(index: number, patch: Partial<QuoteLine>) {
@@ -602,7 +744,10 @@ export default function PublicCustomQuotePage() {
   }
 
   function addLine() {
-    setLines((prev) => [...prev, { sku: "", quantity: "", search: "" }]);
+    setLines((prev) => [
+      ...prev,
+      { sku: "", quantity: "", search: "", customTitle: "", customPrice: "" },
+    ]);
   }
 
   function removeLine(index: number) {
@@ -688,9 +833,14 @@ export default function PublicCustomQuotePage() {
             </div>
           </div>
 
-          <a href="/custom-quote?logout=1" style={styles.logout}>
-            Log out
-          </a>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <a href={quoteReviewHref} style={styles.logout}>
+              Review Quotes
+            </a>
+            <a href={logoutHref} style={styles.logout}>
+              Log out
+            </a>
+          </div>
         </div>
 
         <Form method="post" style={{ display: "grid", gap: "22px" }}>
@@ -725,6 +875,16 @@ export default function PublicCustomQuotePage() {
               >
                 Contractor
               </button>
+              <button
+                type="button"
+                onClick={() => setQuoteAudience("custom")}
+                style={{
+                  ...styles.tabButton,
+                  ...(quoteAudience === "custom" ? styles.tabButtonActive : {}),
+                }}
+              >
+                Custom
+              </button>
             </div>
 
             {quoteAudience === "contractor" ? (
@@ -741,6 +901,11 @@ export default function PublicCustomQuotePage() {
                   <option value="tier1">Tier 1</option>
                   <option value="tier2">Tier 2</option>
                 </select>
+              </div>
+            ) : quoteAudience === "custom" ? (
+              <div style={{ color: "#93c5fd", fontSize: 14 }}>
+                Custom mode keeps the same quote flow but lets you override line titles,
+                unit prices, delivery, shipping math, tax, and notes.
               </div>
             ) : null}
           </div>
@@ -759,6 +924,28 @@ export default function PublicCustomQuotePage() {
                   name="customerName"
                   autoComplete="name"
                   defaultValue={actionData?.customerName || ""}
+                  style={styles.input}
+                />
+              </div>
+
+              <div>
+                <label style={styles.label}>Email Address</label>
+                <input
+                  type="email"
+                  name="customerEmail"
+                  autoComplete="email"
+                  defaultValue={actionData?.customerEmail || ""}
+                  style={styles.input}
+                />
+              </div>
+
+              <div>
+                <label style={styles.label}>Phone Number</label>
+                <input
+                  type="tel"
+                  name="customerPhone"
+                  autoComplete="tel"
+                  defaultValue={actionData?.customerPhone || ""}
                   style={styles.input}
                 />
               </div>
@@ -976,21 +1163,73 @@ export default function PublicCustomQuotePage() {
 
                         <div>
                           <div style={{ fontWeight: 700 }}>
-                            {selectedProduct.title}
+                            {quoteAudience === "custom" && line.customTitle
+                              ? line.customTitle
+                              : selectedProduct.title}
                           </div>
                           <div style={{ fontSize: 13, color: "#bfdbfe" }}>
                             {selectedProduct.sku} — {selectedProduct.vendor}
                           </div>
                           <div style={{ fontSize: 13, color: "#bfdbfe" }}>
                             Unit Price: $
-                            {Number(
+                            {(() => {
+                              const customPriceValue = Number(line.customPrice || "");
+                              const displayPrice =
+                                quoteAudience === "custom" &&
+                                String(line.customPrice || "").trim() !== "" &&
+                                Number.isFinite(customPriceValue)
+                                  ? customPriceValue
+                                  : getUnitPriceForProduct(
+                                      selectedProduct,
+                                      quoteAudience,
+                                      contractorTier,
+                                    );
+                              return Number(displayPrice).toFixed(2);
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {selectedProduct && quoteAudience === "custom" ? (
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "minmax(260px, 1fr) 180px",
+                          gap: "12px",
+                        }}
+                      >
+                        <div>
+                          <label style={styles.label}>Custom Line Title</label>
+                          <input
+                            type="text"
+                            value={line.customTitle || ""}
+                            onChange={(e) =>
+                              updateLine(index, { customTitle: e.target.value })
+                            }
+                            placeholder={selectedProduct.title}
+                            style={styles.input}
+                          />
+                        </div>
+                        <div>
+                          <label style={styles.label}>Custom Unit Price</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={line.customPrice || ""}
+                            onChange={(e) =>
+                              updateLine(index, { customPrice: e.target.value })
+                            }
+                            placeholder={String(
                               getUnitPriceForProduct(
                                 selectedProduct,
                                 quoteAudience,
                                 contractorTier,
                               ),
-                            ).toFixed(2)}
-                          </div>
+                            )}
+                            style={styles.input}
+                          />
                         </div>
                       </div>
                     ) : null}
@@ -1103,6 +1342,118 @@ export default function PublicCustomQuotePage() {
             </div>
           </div>
 
+          {quoteAudience === "custom" ? (
+            <div style={styles.card}>
+              <h2 style={styles.sectionTitle}>Custom Adjustments</h2>
+              <p style={styles.sectionSub}>
+                Override delivery, tax, and the customer-facing quote details before
+                calculating or saving.
+              </p>
+
+              <div style={{ display: "grid", gap: "14px" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "180px 180px",
+                    gap: "14px",
+                  }}
+                >
+                  <div>
+                    <label style={styles.label}>Delivery Amount</label>
+                    <input
+                      type="number"
+                      name="customDeliveryAmount"
+                      min="0"
+                      step="0.01"
+                      defaultValue={actionData?.customDeliveryAmount || ""}
+                      placeholder="Use calculated delivery"
+                      style={styles.input}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={styles.label}>Tax Rate</label>
+                    <input
+                      type="number"
+                      name="customTaxRate"
+                      min="0"
+                      step="0.0001"
+                      defaultValue={actionData?.customTaxRate || ""}
+                      placeholder="Example: 0.055"
+                      style={styles.input}
+                    />
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "160px 160px 180px",
+                    gap: "14px",
+                  }}
+                >
+                  <div>
+                    <label style={styles.label}>Shipping Qty</label>
+                    <input
+                      type="number"
+                      name="customShippingQuantity"
+                      min="0"
+                      step="0.01"
+                      defaultValue={actionData?.customShippingQuantity || ""}
+                      placeholder="Miles or hours"
+                      style={styles.input}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={styles.label}>Shipping Unit</label>
+                    <select
+                      name="customShippingUnit"
+                      defaultValue={actionData?.customShippingUnit || "miles"}
+                      style={styles.input}
+                    >
+                      <option value="miles">Miles</option>
+                      <option value="hours">Hours</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label style={styles.label}>Price Per Unit</label>
+                    <input
+                      type="number"
+                      name="customShippingRate"
+                      min="0"
+                      step="0.01"
+                      defaultValue={actionData?.customShippingRate || ""}
+                      placeholder="Rate per mile/hour"
+                      style={styles.input}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ color: "#93c5fd", fontSize: 13 }}>
+                  If shipping quantity and price per unit are both filled in, the
+                  delivery amount will use `quantity x rate` and override the manual
+                  delivery amount above.
+                </div>
+
+                <div>
+                  <label style={styles.label}>Notes</label>
+                  <textarea
+                    name="customNotes"
+                    defaultValue={actionData?.customNotes || ""}
+                    placeholder="Use calculated notes"
+                    style={{
+                      ...styles.input,
+                      minHeight: 110,
+                      resize: "vertical",
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
             <button
               type="submit"
@@ -1173,9 +1524,17 @@ export default function PublicCustomQuotePage() {
                   {Number(actionData.pricing.productsSubtotal).toFixed(2)}
                 </div>
                 <div>
-                  <strong style={{ color: "#93c5fd" }}>Delivery:</strong> $
-                  {Number(actionData.pricing.deliveryAmount).toFixed(2)}
+                  <strong style={{ color: "#93c5fd" }}>
+                    {actionData.shippingCalculationText ? "Shipping:" : "Delivery:"}
+                  </strong>{" "}
+                  ${Number(actionData.pricing.deliveryAmount).toFixed(2)}
                 </div>
+                {actionData.shippingCalculationText ? (
+                  <div>
+                    <strong style={{ color: "#93c5fd" }}>Shipping Calc:</strong>{" "}
+                    {actionData.shippingCalculationText}
+                  </div>
+                ) : null}
                 <div>
                   <strong style={{ color: "#93c5fd" }}>Tax:</strong> $
                   {Number(actionData.pricing.taxAmount).toFixed(2)}
@@ -1201,11 +1560,9 @@ export default function PublicCustomQuotePage() {
                   {actionData.deliveryQuote.eta}
                 </div>
                 <div>
-                  <strong style={{ color: "#93c5fd" }}>Summary:</strong>{" "}
-                  {actionData.deliveryQuote.summary}
-                </div>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Notes:</strong>{" "}
+                  <strong style={{ color: "#93c5fd" }}>
+                    {actionData.shippingCalculationText ? "Custom Shipping:" : "Notes:"}
+                  </strong>{" "}
                   {actionData.deliveryQuote.description}
                 </div>
               </div>
@@ -1303,14 +1660,81 @@ export default function PublicCustomQuotePage() {
                   {new Date(selectedHistoryQuote.created_at).toLocaleString()}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={copyHistoryQuote}
-                style={styles.buttonGhost}
-              >
-                Copy Saved Quote
-              </button>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={copyHistoryQuote}
+                  style={styles.buttonGhost}
+                >
+                  Copy Saved Quote
+                </button>
+                <deleteQuoteFetcher.Form
+                  method="post"
+                  action={deleteQuoteAction}
+                  onSubmit={(event) => {
+                    if (!window.confirm("Delete this quote? This can't be undone.")) {
+                      event.preventDefault();
+                    }
+                  }}
+                >
+                  <input type="hidden" name="quoteId" value={selectedHistoryQuote.id} />
+                  <button type="submit" style={styles.buttonGhost}>
+                    {deleteQuoteFetcher.state === "submitting"
+                      ? "Deleting..."
+                      : "Delete Quote"}
+                  </button>
+                </deleteQuoteFetcher.Form>
+              </div>
             </div>
+
+            <draftOrderFetcher.Form
+              method="post"
+              action={createDraftOrderAction}
+              style={{ marginBottom: 16, display: "flex", gap: 12, flexWrap: "wrap" }}
+            >
+              <input type="hidden" name="quoteId" value={selectedHistoryQuote.id} />
+              <button type="submit" style={styles.buttonPrimary}>
+                {draftOrderFetcher.state === "submitting"
+                  ? "Creating Draft Order..."
+                  : "Send To Shopify"}
+              </button>
+              {draftOrderFetcher.data?.draftOrderAdminUrl ? (
+                <a
+                  href={draftOrderFetcher.data.draftOrderAdminUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={styles.buttonGhost}
+                >
+                  Open Draft Order
+                </a>
+              ) : null}
+              {draftOrderFetcher.data?.draftOrderInvoiceUrl ? (
+                <a
+                  href={draftOrderFetcher.data.draftOrderInvoiceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={styles.buttonGhost}
+                >
+                  Open Invoice
+                </a>
+              ) : null}
+            </draftOrderFetcher.Form>
+
+            {draftOrderFetcher.data?.message ? (
+              <div
+                style={draftOrderFetcher.data.ok ? styles.statusOk : styles.statusErr}
+              >
+                {draftOrderFetcher.data.message}
+              </div>
+            ) : null}
+
+            {deleteQuoteFetcher.data?.message ? (
+              <div
+                style={deleteQuoteFetcher.data.ok ? styles.statusOk : styles.statusErr}
+              >
+                {deleteQuoteFetcher.data.message}
+              </div>
+            ) : null}
 
             <div
               style={{
@@ -1323,6 +1747,14 @@ export default function PublicCustomQuotePage() {
                 <div>
                   <strong style={{ color: "#93c5fd" }}>Customer:</strong>{" "}
                   {selectedHistoryQuote.customer_name || "Unnamed customer"}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Email:</strong>{" "}
+                  {selectedHistoryQuote.customer_email || "N/A"}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Phone:</strong>{" "}
+                  {selectedHistoryQuote.customer_phone || "N/A"}
                 </div>
                 <div>
                   <strong style={{ color: "#93c5fd" }}>Address:</strong>{" "}
@@ -1341,6 +1773,12 @@ export default function PublicCustomQuotePage() {
                   <strong style={{ color: "#93c5fd" }}>ETA:</strong>{" "}
                   {selectedHistoryQuote.eta || "N/A"}
                 </div>
+                {selectedHistoryQuote.shipping_details ? (
+                  <div>
+                    <strong style={{ color: "#93c5fd" }}>Shipping Details:</strong>{" "}
+                    {selectedHistoryQuote.shipping_details}
+                  </div>
+                ) : null}
                 <div>
                   <strong style={{ color: "#93c5fd" }}>Summary:</strong>{" "}
                   {selectedHistoryQuote.summary || "N/A"}
