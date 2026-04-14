@@ -64,6 +64,40 @@
     return null;
   }
 
+  function getMoneyElements(scope) {
+    return Array.from(scope.querySelectorAll("*")).filter((element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      if (element.querySelector(".ghs-unit-label")) return false;
+      if (element.children.length > 2) return false;
+
+      const text = (element.textContent || "").trim();
+      if (!text || text.length > 48) return false;
+      if (!hasCurrencyText(element)) return false;
+
+      const style = window.getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+
+      return true;
+    });
+  }
+
+  function appendLabelBlock(element, unitLabel) {
+    if (!element || !unitLabel) return;
+    if (element.parentElement && element.parentElement.querySelector(".ghs-unit-label")) return;
+
+    const label = document.createElement("span");
+    label.className = "ghs-unit-label";
+    label.textContent = unitLabel;
+
+    if (element.parentElement) {
+      element.insertAdjacentText("beforeend", " ");
+      element.appendChild(label);
+      return;
+    }
+
+    element.appendChild(label);
+  }
+
   function appendLabel(element, unitLabel) {
     if (!element || !unitLabel || element.querySelector(".ghs-unit-label")) return;
     const label = document.createElement("span");
@@ -90,12 +124,14 @@
     });
 
     if (!matches.size) {
-      const fallback = findCandidate(fallbackProductSelectors, document);
-      if (fallback) appendLabel(fallback, product.unitLabel);
+      const fallback =
+        findCandidate(fallbackProductSelectors, document) ||
+        getMoneyElements(document.querySelector("main") || document.body)[0];
+      if (fallback) appendLabelBlock(fallback, product.unitLabel);
       return;
     }
 
-    matches.forEach((element) => appendLabel(element, product.unitLabel));
+    matches.forEach((element) => appendLabelBlock(element, product.unitLabel));
   }
 
   function productCardContainers() {
@@ -130,8 +166,12 @@
       const unitLabel = handle ? collectionProducts[handle] : null;
       if (!unitLabel) return;
 
-      const priceElement = findCandidate(selectors, container) || findCandidate(fallbackCardSelectors, container);
-      appendLabel(priceElement, unitLabel);
+      const priceElement =
+        findCandidate(selectors, container) ||
+        findCandidate(fallbackCardSelectors, container) ||
+        getMoneyElements(container)[0];
+
+      appendLabelBlock(priceElement, unitLabel);
     });
   }
 
