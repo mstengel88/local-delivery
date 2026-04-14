@@ -15,6 +15,20 @@
   const cardSelector = (root.dataset.cardPriceSelector || "").trim();
   const shop = pageData.shop;
   const apiUrl = pageData.apiUrl;
+  const debugEnabled = new URLSearchParams(window.location.search).get("ghs-unit-debug") === "1";
+
+  function setDebug(message, details) {
+    if (!debugEnabled) return;
+    let panel = document.querySelector(".ghs-unit-debug");
+    if (!(panel instanceof HTMLElement)) {
+      panel = document.createElement("div");
+      panel.className = "ghs-unit-debug";
+      document.body.appendChild(panel);
+    }
+
+    const detailText = details ? `\n${JSON.stringify(details, null, 2)}` : "";
+    panel.textContent = `${message}${detailText}`;
+  }
 
   const fallbackProductSelectors = [
     ".product__info-container .price",
@@ -92,10 +106,12 @@
     if (element.parentElement) {
       element.insertAdjacentText("beforeend", " ");
       element.appendChild(label);
+      setDebug("Label appended", { text: unitLabel, target: element.textContent });
       return;
     }
 
     element.appendChild(label);
+    setDebug("Label appended", { text: unitLabel, target: element.textContent });
   }
 
   function appendLabel(element, unitLabel) {
@@ -184,10 +200,15 @@
 
     try {
       const response = await fetch(url.toString(), { credentials: "omit" });
-      if (!response.ok) return {};
+      if (!response.ok) {
+        setDebug("Unit label API failed", { status: response.status, url: url.toString() });
+        return {};
+      }
       const payload = await response.json();
+      setDebug("Unit label API response", payload);
       return payload.labels || {};
     } catch (_error) {
+      setDebug("Unit label API threw", { url: url.toString() });
       return {};
     }
   }
@@ -213,6 +234,7 @@
     const productHandle = currentProductHandle();
     if (productHandle) handles.add(productHandle);
     collectionHandles().forEach((handle) => handles.add(handle));
+    setDebug("Handles detected", { handles: Array.from(handles), shop, apiUrl });
 
     const fetchedLabels = await fetchLabels(Array.from(handles));
     if (productHandle && fetchedLabels[productHandle]) {
@@ -224,6 +246,10 @@
 
     applyProductLabel();
     applyCollectionLabels();
+    setDebug("Apply complete", {
+      product: pageData.product || null,
+      collectionProducts: pageData.collectionProducts || {},
+    });
   }
 
   document.addEventListener("shopify:section:load", applyAll);
