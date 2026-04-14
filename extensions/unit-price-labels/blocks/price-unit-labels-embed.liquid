@@ -1,7 +1,7 @@
 {% liquid
   assign product_unit_label = blank
-  if product and product.metafields.app.price_unit_label
-    assign product_unit_label = product.metafields.app.price_unit_label.value
+  if product and product.metafields["$app"] and product.metafields["$app"].price_unit_label
+    assign product_unit_label = product.metafields["$app"].price_unit_label.value
   endif
 %}
 
@@ -17,8 +17,8 @@
       {% if collection %}
         {% for collection_product in collection.products %}
           {% assign collection_unit_label = blank %}
-          {% if collection_product.metafields.app.price_unit_label %}
-            {% assign collection_unit_label = collection_product.metafields.app.price_unit_label.value %}
+          {% if collection_product.metafields["$app"] and collection_product.metafields["$app"].price_unit_label %}
+            {% assign collection_unit_label = collection_product.metafields["$app"].price_unit_label.value %}
           {% endif %}
           {{ collection_product.handle | json }}: {{ collection_unit_label | json }}{% unless forloop.last %},{% endunless %}
         {% endfor %}
