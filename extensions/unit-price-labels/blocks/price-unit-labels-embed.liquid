@@ -8,6 +8,8 @@
 <script id="ghs-price-unit-labels-data" type="application/json">
   {
     "pageType": {{ request.page_type | json }},
+    "shop": {{ shop.permanent_domain | json }},
+    "apiUrl": {{ "https://app.ghstickets.com/api/unit-labels" | json }},
     "product": {% if product %}{
       "id": {{ product.id | json }},
       "handle": {{ product.handle | json }},

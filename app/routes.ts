@@ -23,6 +23,7 @@ export default [
   route("api/sync-products", "routes/api.sync-products.ts"),
   route("api/create-draft-order", "routes/api.create-draft-order.ts"),
   route("api/delete-quote", "routes/api.delete-quote.ts"),
+  route("api/unit-labels", "routes/api.unit-labels.ts"),
 
   route("app/api/shipping-estimate", "routes/app.api.shipping-estimate.ts"),
   route("app/api/carrier-service", "routes/app.api.carrier-service.ts"),

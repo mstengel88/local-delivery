@@ -13,6 +13,8 @@
 
   const productSelector = (root.dataset.productPriceSelector || "").trim();
   const cardSelector = (root.dataset.cardPriceSelector || "").trim();
+  const shop = pageData.shop;
+  const apiUrl = pageData.apiUrl;
 
   const fallbackProductSelectors = [
     ".product__info-container .price",
@@ -133,7 +135,53 @@
     });
   }
 
-  function applyAll() {
+  async function fetchLabels(handles) {
+    if (!apiUrl || !shop || !handles.length) return {};
+
+    const url = new URL(apiUrl);
+    url.searchParams.set("shop", shop);
+    handles.forEach((handle) => url.searchParams.append("handle", handle));
+
+    try {
+      const response = await fetch(url.toString(), { credentials: "omit" });
+      if (!response.ok) return {};
+      const payload = await response.json();
+      return payload.labels || {};
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function currentProductHandle() {
+    if (pageData.product && pageData.product.handle) return pageData.product.handle;
+    return normalizeHandleFromUrl(window.location.href);
+  }
+
+  function collectionHandles() {
+    const handles = productCardContainers()
+      .map((container) => {
+        const anchor = container.querySelector("a[href*='/products/']");
+        return anchor instanceof HTMLAnchorElement ? normalizeHandleFromUrl(anchor.href) : null;
+      })
+      .filter(Boolean);
+
+    return Array.from(new Set(handles));
+  }
+
+  async function applyAll() {
+    const handles = new Set();
+    const productHandle = currentProductHandle();
+    if (productHandle) handles.add(productHandle);
+    collectionHandles().forEach((handle) => handles.add(handle));
+
+    const fetchedLabels = await fetchLabels(Array.from(handles));
+    if (productHandle && fetchedLabels[productHandle]) {
+      pageData.product = pageData.product || {};
+      pageData.product.handle = productHandle;
+      pageData.product.unitLabel = fetchedLabels[productHandle];
+    }
+    pageData.collectionProducts = Object.assign({}, pageData.collectionProducts || {}, fetchedLabels);
+
     applyProductLabel();
     applyCollectionLabels();
   }

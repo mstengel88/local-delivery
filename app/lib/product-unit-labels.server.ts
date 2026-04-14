@@ -1,7 +1,8 @@
+import shopify from "../shopify.server";
+
 const UNIT_LABEL_NAMESPACE = "green_hills";
 const UNIT_LABEL_KEY = "price_unit_label";
 const UNIT_LABEL_TYPE = "single_line_text_field";
-const LEGACY_APP_NAMESPACE = "$app";
 
 export type ProductUnitLabelRecord = {
   id: string;
@@ -220,4 +221,45 @@ export async function saveProductUnitLabels(
   }
 
   return { userErrors };
+}
+
+export async function getProductUnitLabelsByHandles(shop: string, handles: string[]) {
+  if (!shop || !handles.length) return {};
+
+  const uniqueHandles = Array.from(new Set(handles.map((handle) => handle.trim()).filter(Boolean)));
+  if (!uniqueHandles.length) return {};
+
+  const client = await shopify.unauthenticated.admin(shop);
+  const searchQuery = uniqueHandles.map((handle) => `handle:${handle}`).join(" OR ");
+
+  const response = await client.admin.graphql(
+    `#graphql
+      query ProductUnitLabelsByHandle($first: Int!, $query: String!) {
+        products(first: $first, query: $query) {
+          nodes {
+            handle
+            metafield(namespace: "green_hills", key: "price_unit_label") {
+              value
+            }
+          }
+        }
+      }
+    `,
+    {
+      variables: {
+        first: uniqueHandles.length,
+        query: searchQuery,
+      },
+    },
+  );
+
+  const json = await response.json();
+  const nodes = json?.data?.products?.nodes ?? [];
+
+  return nodes.reduce((acc: Record<string, string>, product: any) => {
+    if (product?.handle && product?.metafield?.value) {
+      acc[product.handle] = product.metafield.value;
+    }
+    return acc;
+  }, {});
 }
