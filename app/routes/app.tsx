@@ -90,6 +90,20 @@ export default function AppLayout() {
         </Link>
 
         <Link
+          to={`/app/unit-labels${qs}`}
+          style={{
+            color: "#e5e7eb",
+            textDecoration: "none",
+            padding: "10px 14px",
+            borderRadius: "10px",
+            border: "1px solid #334155",
+            background: "#0f172a",
+          }}
+        >
+          Unit Labels
+        </Link>
+
+        <Link
           to={`/app/custom-quote${qs}`}
           style={{
             color: "#e5e7eb",

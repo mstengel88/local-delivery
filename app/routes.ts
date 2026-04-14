@@ -13,6 +13,7 @@ export default [
     index("routes/app._index.tsx"),
     route("admin", "routes/app.admin.tsx"),
     route("additional", "routes/app.additional.tsx"),
+    route("unit-labels", "routes/app.unit-labels.tsx"),
     route("custom-quote", "routes/app.custom-quote.tsx"),
     route("quote-review", "routes/app.quote-review.tsx"),
   ]),
