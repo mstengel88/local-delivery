@@ -23,16 +23,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
 export async function action({ request }: ActionFunctionArgs) {
   const { admin } = await authenticate.admin(request);
-  const definitionResult = await ensureProductUnitLabelDefinition(admin);
-  if (definitionResult.userErrors.length) {
-    return data<ActionData>(
-      {
-        ok: false,
-        message: definitionResult.userErrors.map((error) => error.message).join(" "),
-      },
-      { status: 400 },
-    );
-  }
+  await ensureProductUnitLabelDefinition(admin);
   const formData = await request.formData();
   const updates: Array<{ productId: string; unitLabel: string }> = [];
 

@@ -157,11 +157,12 @@
   }
 
   function productCardContainers() {
+    const hyperCards = Array.from(document.querySelectorAll(".product-card"));
+    if (hyperCards.length) return hyperCards;
+
     return Array.from(
       document.querySelectorAll(
         [
-          ".product-card",
-          ".product-card__wrapper",
           ".card-wrapper",
           ".grid__item",
           ".product-grid-item",

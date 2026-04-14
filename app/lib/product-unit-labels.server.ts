@@ -25,90 +25,94 @@ export const productUnitLabelDefinition = {
 };
 
 export async function ensureProductUnitLabelDefinition(admin: AdminGraphqlClient) {
-  const lookupResponse = await admin.graphql(
-    `#graphql
-      query ProductUnitLabelDefinition {
-        metafieldDefinitions(first: 20, ownerType: PRODUCT, namespace: "green_hills") {
-          nodes {
-            id
-            key
-            access {
-              storefront
-            }
-          }
-        }
-      }
-    `,
-  );
-
-  const lookupJson = await lookupResponse.json();
-  const definitions = lookupJson?.data?.metafieldDefinitions?.nodes ?? [];
-  const existing = definitions.find((definition: any) => definition.key === UNIT_LABEL_KEY);
-
-  if (!existing) {
-    const createResponse = await admin.graphql(
+  try {
+    const lookupResponse = await admin.graphql(
       `#graphql
-        mutation CreateProductUnitLabelDefinition {
-          metafieldDefinitionCreate(
-            definition: {
-              name: "Price unit label"
-              namespace: "green_hills"
-              key: "price_unit_label"
-              description: "Short label appended next to storefront prices, such as per yard or per ton."
-              type: "single_line_text_field"
-              ownerType: PRODUCT
-              access: {
-                storefront: PUBLIC_READ
-              }
-            }
-          ) {
-            createdDefinition {
+        query ProductUnitLabelDefinition {
+          metafieldDefinitions(first: 20, ownerType: PRODUCT, namespace: "green_hills") {
+            nodes {
               id
-            }
-            userErrors {
-              field
-              message
+              key
+              access {
+                storefront
+              }
             }
           }
         }
       `,
     );
 
-    const createJson = await createResponse.json();
-    return {
-      userErrors: createJson?.data?.metafieldDefinitionCreate?.userErrors ?? [],
-    };
-  }
+    const lookupJson = await lookupResponse.json();
+    const definitions = lookupJson?.data?.metafieldDefinitions?.nodes ?? [];
+    const existing = definitions.find((definition: any) => definition.key === UNIT_LABEL_KEY);
 
-  if (existing.access?.storefront !== "PUBLIC_READ") {
-    const updateResponse = await admin.graphql(
-      `#graphql
-        mutation UpdateProductUnitLabelDefinition($id: ID!) {
-          metafieldDefinitionUpdate(
-            id: $id
-            definition: {
-              access: {
-                storefront: PUBLIC_READ
+    if (!existing) {
+      const createResponse = await admin.graphql(
+        `#graphql
+          mutation CreateProductUnitLabelDefinition {
+            metafieldDefinitionCreate(
+              definition: {
+                name: "Price unit label"
+                namespace: "green_hills"
+                key: "price_unit_label"
+                description: "Short label appended next to storefront prices, such as per yard or per ton."
+                type: "single_line_text_field"
+                ownerType: PRODUCT
+                access: {
+                  storefront: PUBLIC_READ
+                }
+              }
+            ) {
+              createdDefinition {
+                id
+              }
+              userErrors {
+                field
+                message
               }
             }
-          ) {
-            updatedDefinition {
-              id
-            }
-            userErrors {
-              field
-              message
+          }
+        `,
+      );
+
+      const createJson = await createResponse.json();
+      return {
+        userErrors: createJson?.data?.metafieldDefinitionCreate?.userErrors ?? [],
+      };
+    }
+
+    if (existing.access?.storefront !== "PUBLIC_READ") {
+      const updateResponse = await admin.graphql(
+        `#graphql
+          mutation UpdateProductUnitLabelDefinition($id: ID!) {
+            metafieldDefinitionUpdate(
+              id: $id
+              definition: {
+                access: {
+                  storefront: PUBLIC_READ
+                }
+              }
+            ) {
+              updatedDefinition {
+                id
+              }
+              userErrors {
+                field
+                message
+              }
             }
           }
-        }
-      `,
-      { variables: { id: existing.id } },
-    );
+        `,
+        { variables: { id: existing.id } },
+      );
 
-    const updateJson = await updateResponse.json();
-    return {
-      userErrors: updateJson?.data?.metafieldDefinitionUpdate?.userErrors ?? [],
-    };
+      const updateJson = await updateResponse.json();
+      return {
+        userErrors: updateJson?.data?.metafieldDefinitionUpdate?.userErrors ?? [],
+      };
+    }
+  } catch (error) {
+    console.error("[UNIT LABEL DEFINITION ERROR]", error);
   }
 
   return { userErrors: [] };
@@ -198,6 +202,7 @@ export async function saveProductUnitLabels(
     );
 
     const setJson = await setResponse.json();
+    userErrors.push(...(setJson?.errors ?? []).map((error: any) => ({ message: error.message })));
     userErrors.push(...(setJson?.data?.metafieldsSet?.userErrors ?? []));
   }
 
@@ -217,6 +222,7 @@ export async function saveProductUnitLabels(
     );
 
     const deleteJson = await deleteResponse.json();
+    userErrors.push(...(deleteJson?.errors ?? []).map((error: any) => ({ message: error.message })));
     userErrors.push(...(deleteJson?.data?.metafieldsDelete?.userErrors ?? []));
   }
 
