@@ -38,6 +38,12 @@
   ];
 
   const fallbackCardSelectors = [
+    ".product-card .f-price-item--sale",
+    ".product-card .f-price-item--regular",
+    ".product-card .f-price",
+    ".product-card__info .f-price-item--sale",
+    ".product-card__info .f-price-item--regular",
+    ".product-card__info .f-price",
     ".card-information .price",
     ".card__information .price",
     ".product-card-wrapper .price",
@@ -154,6 +160,8 @@
     return Array.from(
       document.querySelectorAll(
         [
+          ".product-card",
+          ".product-card__wrapper",
           ".card-wrapper",
           ".grid__item",
           ".product-grid-item",
@@ -182,7 +190,13 @@
       const unitLabel = handle ? collectionProducts[handle] : null;
       if (!unitLabel) return;
 
+      const hyperPriceElement =
+        container.querySelector(".f-price-item--sale") ||
+        container.querySelector(".f-price-item--regular") ||
+        container.querySelector(".f-price");
+
       const priceElement =
+        hyperPriceElement ||
         findCandidate(selectors, container) ||
         findCandidate(fallbackCardSelectors, container) ||
         getMoneyElements(container)[0];
