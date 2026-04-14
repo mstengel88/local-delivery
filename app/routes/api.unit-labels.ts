@@ -23,12 +23,12 @@ export async function loader({ request }: any) {
   }
 
   try {
-    const labels = await getProductUnitLabelsByHandles(shop, handles);
-    return jsonResponse({ labels });
+    const result = await getProductUnitLabelsByHandles(shop, handles);
+    return jsonResponse(result);
   } catch (error: any) {
     console.error("[UNIT LABELS API ERROR]", error);
     return jsonResponse(
-      { labels: {}, message: error?.message || "Failed to load unit labels." },
+      { labels: {}, color: "#d1d5db", message: error?.message || "Failed to load unit labels." },
       500,
     );
   }

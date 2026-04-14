@@ -108,6 +108,7 @@
     const label = document.createElement("span");
     label.className = "ghs-unit-label";
     label.textContent = unitLabel;
+    if (pageData.labelColor) label.style.color = pageData.labelColor;
 
     if (element.parentElement) {
       element.insertAdjacentText("beforeend", " ");
@@ -125,6 +126,7 @@
     const label = document.createElement("span");
     label.className = "ghs-unit-label";
     label.textContent = unitLabel;
+    if (pageData.labelColor) label.style.color = pageData.labelColor;
     element.appendChild(label);
   }
 
@@ -221,7 +223,7 @@
       }
       const payload = await response.json();
       setDebug("Unit label API response", payload);
-      return payload.labels || {};
+      return payload || { labels: {} };
     } catch (_error) {
       setDebug("Unit label API threw", { url: url.toString() });
       return {};
@@ -251,7 +253,11 @@
     collectionHandles().forEach((handle) => handles.add(handle));
     setDebug("Handles detected", { handles: Array.from(handles), shop, apiUrl });
 
-    const fetchedLabels = await fetchLabels(Array.from(handles));
+    const fetchedPayload = await fetchLabels(Array.from(handles));
+    const fetchedLabels = fetchedPayload.labels || {};
+    if (fetchedPayload.color) {
+      pageData.labelColor = fetchedPayload.color;
+    }
     if (productHandle && fetchedLabels[productHandle]) {
       pageData.product = pageData.product || {};
       pageData.product.handle = productHandle;

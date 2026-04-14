@@ -3,7 +3,9 @@ import { data, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-ro
 import { authenticate } from "../shopify.server";
 import {
   ensureProductUnitLabelDefinition,
+  getShopUnitLabelColor,
   listProductUnitLabels,
+  saveShopUnitLabelColor,
   saveProductUnitLabels,
   type ProductUnitLabelRecord,
 } from "../lib/product-unit-labels.server";
@@ -17,8 +19,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const { admin } = await authenticate.admin(request);
   await ensureProductUnitLabelDefinition(admin);
   const products = await listProductUnitLabels(admin, 250);
+  const labelColor = await getShopUnitLabelColor(admin);
 
-  return data({ products });
+  return data({ products, labelColor });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -36,13 +39,17 @@ export async function action({ request }: ActionFunctionArgs) {
     });
   });
 
+  const labelColor = String(formData.get("labelColor") || "").trim() || "#d1d5db";
   const result = await saveProductUnitLabels(admin, updates);
+  const colorResult = await saveShopUnitLabelColor(admin, labelColor);
 
-  if (result.userErrors.length) {
+  const userErrors = [...result.userErrors, ...colorResult.userErrors];
+
+  if (userErrors.length) {
     return data<ActionData>(
       {
         ok: false,
-        message: result.userErrors.map((error) => error.message).join(" "),
+        message: userErrors.map((error) => error.message).join(" "),
       },
       { status: 400 },
     );
@@ -144,7 +151,7 @@ function ProductRow({ product }: { product: ProductUnitLabelRecord }) {
 }
 
 export default function UnitLabelsPage() {
-  const { products } = useLoaderData<typeof loader>();
+  const { products, labelColor } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSaving = navigation.state === "submitting";
@@ -218,6 +225,43 @@ export default function UnitLabelsPage() {
           <div style={{ color: "#94a3b8", fontSize: 13 }}>
             Showing the first {products.length} products sorted by title.
           </div>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "14px 16px",
+            border: "1px solid #1f2937",
+            borderRadius: 14,
+            background: "#0b1220",
+            color: "#cbd5e1",
+          }}
+        >
+          <label htmlFor="labelColor" style={{ fontWeight: 600 }}>
+            Label color
+          </label>
+          <input
+            id="labelColor"
+            name="labelColor"
+            type="color"
+            defaultValue={labelColor}
+            style={{ width: 48, height: 36, border: "none", background: "transparent" }}
+          />
+          <input
+            type="text"
+            value={labelColor}
+            readOnly
+            style={{
+              width: 110,
+              borderRadius: 10,
+              border: "1px solid #334155",
+              background: "#020617",
+              color: "#f8fafc",
+              padding: "10px 12px",
+            }}
+          />
         </div>
 
         {products.map((product) => (

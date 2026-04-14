@@ -3,6 +3,8 @@ import shopify from "../shopify.server";
 const UNIT_LABEL_NAMESPACE = "green_hills";
 const UNIT_LABEL_KEY = "price_unit_label";
 const UNIT_LABEL_TYPE = "single_line_text_field";
+const SHOP_LABEL_COLOR_KEY = "price_unit_label_color";
+const SHOP_LABEL_COLOR_TYPE = "single_line_text_field";
 
 export type ProductUnitLabelRecord = {
   id: string;
@@ -13,6 +15,8 @@ export type ProductUnitLabelRecord = {
   imageUrl: string | null;
   unitLabel: string;
 };
+
+export const DEFAULT_LABEL_COLOR = "#d1d5db";
 
 type AdminGraphqlClient = {
   graphql: (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response>;
@@ -162,6 +166,76 @@ export async function listProductUnitLabels(
   }));
 }
 
+export async function getShopUnitLabelColor(admin: AdminGraphqlClient): Promise<string> {
+  const response = await admin.graphql(
+    `#graphql
+      query ShopUnitLabelColor {
+        shop {
+          metafield(namespace: "green_hills", key: "price_unit_label_color") {
+            value
+          }
+        }
+      }
+    `,
+  );
+
+  const json = await response.json();
+  return json?.data?.shop?.metafield?.value || DEFAULT_LABEL_COLOR;
+}
+
+export async function saveShopUnitLabelColor(admin: AdminGraphqlClient, color: string) {
+  const shopResponse = await admin.graphql(
+    `#graphql
+      query ShopUnitLabelColorOwner {
+        shop {
+          id
+        }
+      }
+    `,
+  );
+
+  const shopJson = await shopResponse.json();
+  const shopId = shopJson?.data?.shop?.id;
+
+  if (!shopId) {
+    return { userErrors: [{ message: "Could not determine shop id for label color save." }] };
+  }
+
+  const response = await admin.graphql(
+    `#graphql
+      mutation SaveShopUnitLabelColor($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `,
+    {
+      variables: {
+        metafields: [
+          {
+            ownerId: shopId,
+            namespace: UNIT_LABEL_NAMESPACE,
+            key: SHOP_LABEL_COLOR_KEY,
+            type: SHOP_LABEL_COLOR_TYPE,
+            value: color,
+          },
+        ],
+      },
+    },
+  );
+
+  const json = await response.json();
+  return {
+    userErrors: [
+      ...(json?.errors ?? []).map((error: any) => ({ message: error.message })),
+      ...(json?.data?.metafieldsSet?.userErrors ?? []),
+    ],
+  };
+}
+
 export async function saveProductUnitLabels(
   admin: AdminGraphqlClient,
   updates: Array<{ productId: string; unitLabel: string }>,
@@ -185,8 +259,10 @@ export async function saveProductUnitLabels(
     }));
 
   const userErrors: Array<{ field?: string[]; message: string }> = [];
+  const chunkSize = 25;
 
-  if (setInputs.length) {
+  for (let index = 0; index < setInputs.length; index += chunkSize) {
+    const chunk = setInputs.slice(index, index + chunkSize);
     const setResponse = await admin.graphql(
       `#graphql
         mutation SaveProductUnitLabels($metafields: [MetafieldsSetInput!]!) {
@@ -198,7 +274,7 @@ export async function saveProductUnitLabels(
           }
         }
       `,
-      { variables: { metafields: setInputs } },
+      { variables: { metafields: chunk } },
     );
 
     const setJson = await setResponse.json();
@@ -206,7 +282,8 @@ export async function saveProductUnitLabels(
     userErrors.push(...(setJson?.data?.metafieldsSet?.userErrors ?? []));
   }
 
-  if (deleteInputs.length) {
+  for (let index = 0; index < deleteInputs.length; index += chunkSize) {
+    const chunk = deleteInputs.slice(index, index + chunkSize);
     const deleteResponse = await admin.graphql(
       `#graphql
         mutation DeleteProductUnitLabels($metafields: [MetafieldIdentifierInput!]!) {
@@ -218,7 +295,7 @@ export async function saveProductUnitLabels(
           }
         }
       `,
-      { variables: { metafields: deleteInputs } },
+      { variables: { metafields: chunk } },
     );
 
     const deleteJson = await deleteResponse.json();
@@ -261,11 +338,27 @@ export async function getProductUnitLabelsByHandles(shop: string, handles: strin
 
   const json = await response.json();
   const nodes = json?.data?.products?.nodes ?? [];
-
-  return nodes.reduce((acc: Record<string, string>, product: any) => {
+  const labels = nodes.reduce((acc: Record<string, string>, product: any) => {
     if (product?.handle && product?.metafield?.value) {
       acc[product.handle] = product.metafield.value;
     }
     return acc;
   }, {});
+
+  const shopResponse = await client.admin.graphql(
+    `#graphql
+      query ShopUnitLabelColorByShop {
+        shop {
+          metafield(namespace: "green_hills", key: "price_unit_label_color") {
+            value
+          }
+        }
+      }
+    `,
+  );
+
+  const shopJson = await shopResponse.json();
+  const color = shopJson?.data?.shop?.metafield?.value || DEFAULT_LABEL_COLOR;
+
+  return { labels, color };
 }
