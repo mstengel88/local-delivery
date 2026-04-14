@@ -2,6 +2,7 @@ import { Form, useActionData, useLoaderData, useNavigation } from "react-router"
 import { data, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import {
+  ensureProductUnitLabelDefinition,
   listProductUnitLabels,
   saveProductUnitLabels,
   type ProductUnitLabelRecord,
@@ -14,6 +15,7 @@ type ActionData = {
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin } = await authenticate.admin(request);
+  await ensureProductUnitLabelDefinition(admin);
   const products = await listProductUnitLabels(admin, 250);
 
   return data({ products });
@@ -21,6 +23,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
 export async function action({ request }: ActionFunctionArgs) {
   const { admin } = await authenticate.admin(request);
+  const definitionResult = await ensureProductUnitLabelDefinition(admin);
+  if (definitionResult.userErrors.length) {
+    return data<ActionData>(
+      {
+        ok: false,
+        message: definitionResult.userErrors.map((error) => error.message).join(" "),
+      },
+      { status: 400 },
+    );
+  }
   const formData = await request.formData();
   const updates: Array<{ productId: string; unitLabel: string }> = [];
 
@@ -158,8 +170,9 @@ export default function UnitLabelsPage() {
       >
         <h1 style={{ margin: 0, fontSize: 30 }}>Unit Labels</h1>
         <p style={{ margin: "10px 0 0", color: "#cbd5e1", maxWidth: 820, lineHeight: 1.6 }}>
-          Save a short unit label for each product and the theme app extension will append it to
-          visible storefront prices on product pages and collection grids.
+          Save a short unit label for each product in a merchant-owned product metafield, and the
+          theme app extension will append it to visible storefront prices on product pages and
+          collection grids.
         </p>
       </div>
 

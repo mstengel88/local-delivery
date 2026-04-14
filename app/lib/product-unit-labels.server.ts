@@ -1,6 +1,7 @@
-const UNIT_LABEL_NAMESPACE = "$app";
+const UNIT_LABEL_NAMESPACE = "green_hills";
 const UNIT_LABEL_KEY = "price_unit_label";
 const UNIT_LABEL_TYPE = "single_line_text_field";
+const LEGACY_APP_NAMESPACE = "$app";
 
 export type ProductUnitLabelRecord = {
   id: string;
@@ -22,6 +23,96 @@ export const productUnitLabelDefinition = {
   type: UNIT_LABEL_TYPE,
 };
 
+export async function ensureProductUnitLabelDefinition(admin: AdminGraphqlClient) {
+  const lookupResponse = await admin.graphql(
+    `#graphql
+      query ProductUnitLabelDefinition {
+        metafieldDefinitions(first: 20, ownerType: PRODUCT, namespace: "green_hills") {
+          nodes {
+            id
+            key
+            access {
+              storefront
+            }
+          }
+        }
+      }
+    `,
+  );
+
+  const lookupJson = await lookupResponse.json();
+  const definitions = lookupJson?.data?.metafieldDefinitions?.nodes ?? [];
+  const existing = definitions.find((definition: any) => definition.key === UNIT_LABEL_KEY);
+
+  if (!existing) {
+    const createResponse = await admin.graphql(
+      `#graphql
+        mutation CreateProductUnitLabelDefinition {
+          metafieldDefinitionCreate(
+            definition: {
+              name: "Price unit label"
+              namespace: "green_hills"
+              key: "price_unit_label"
+              description: "Short label appended next to storefront prices, such as per yard or per ton."
+              type: "single_line_text_field"
+              ownerType: PRODUCT
+              access: {
+                storefront: PUBLIC_READ
+              }
+            }
+          ) {
+            createdDefinition {
+              id
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+      `,
+    );
+
+    const createJson = await createResponse.json();
+    return {
+      userErrors: createJson?.data?.metafieldDefinitionCreate?.userErrors ?? [],
+    };
+  }
+
+  if (existing.access?.storefront !== "PUBLIC_READ") {
+    const updateResponse = await admin.graphql(
+      `#graphql
+        mutation UpdateProductUnitLabelDefinition($id: ID!) {
+          metafieldDefinitionUpdate(
+            id: $id
+            definition: {
+              access: {
+                storefront: PUBLIC_READ
+              }
+            }
+          ) {
+            updatedDefinition {
+              id
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+      `,
+      { variables: { id: existing.id } },
+    );
+
+    const updateJson = await updateResponse.json();
+    return {
+      userErrors: updateJson?.data?.metafieldDefinitionUpdate?.userErrors ?? [],
+    };
+  }
+
+  return { userErrors: [] };
+}
+
 export async function listProductUnitLabels(
   admin: AdminGraphqlClient,
   first = 100,
@@ -39,7 +130,10 @@ export async function listProductUnitLabels(
             featuredImage {
               url
             }
-            metafield(namespace: "$app", key: "price_unit_label") {
+            metafield(namespace: "green_hills", key: "price_unit_label") {
+              value
+            }
+            legacyUnitLabel: metafield(namespace: "$app", key: "price_unit_label") {
               value
             }
           }
@@ -59,7 +153,7 @@ export async function listProductUnitLabels(
     status: product.status,
     onlineStoreUrl: product.onlineStorePreviewUrl ?? null,
     imageUrl: product.featuredImage?.url ?? null,
-    unitLabel: product.metafield?.value ?? "",
+    unitLabel: product.metafield?.value ?? product.legacyUnitLabel?.value ?? "",
   }));
 }
 

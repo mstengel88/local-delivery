@@ -39,15 +39,6 @@ description = "Tracks products created by the Shopify app template for developme
   [product.metafields.app.demo_info.access]
   admin = "merchant_read_write"
 
-[product.metafields.app.price_unit_label]
-type = "single_line_text_field"
-name = "Price unit label"
-description = "Short label appended next to storefront prices, such as per yard or per ton."
-
-  [product.metafields.app.price_unit_label.access]
-  admin = "merchant_read_write"
-  storefront = "public_read"
-
 [metaobjects.app.example]
 name = "Example"
 description = "An example metaobject definition created by this template"
