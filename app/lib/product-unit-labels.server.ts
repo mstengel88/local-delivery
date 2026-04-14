@@ -1,4 +1,4 @@
-const UNIT_LABEL_NAMESPACE = "app";
+const UNIT_LABEL_NAMESPACE = "$app";
 const UNIT_LABEL_KEY = "price_unit_label";
 const UNIT_LABEL_TYPE = "single_line_text_field";
 
@@ -39,7 +39,7 @@ export async function listProductUnitLabels(
             featuredImage {
               url
             }
-            metafield(namespace: "app", key: "price_unit_label") {
+            metafield(namespace: "$app", key: "price_unit_label") {
               value
             }
           }

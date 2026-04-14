@@ -46,6 +46,7 @@ description = "Short label appended next to storefront prices, such as per yard 
 
   [product.metafields.app.price_unit_label.access]
   admin = "merchant_read_write"
+  storefront = "public_read"
 
 [metaobjects.app.example]
 name = "Example"
