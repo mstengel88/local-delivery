@@ -30,6 +30,11 @@
     panel.textContent = `${message}${detailText}`;
   }
 
+  function applyGlobalLabelColor() {
+    if (!pageData.labelColor) return;
+    document.documentElement.style.setProperty("--gh-price-unit-color", pageData.labelColor);
+  }
+
   const fallbackProductSelectors = [
     ".product__info-container .price",
     ".product .price",
@@ -258,6 +263,7 @@
     if (fetchedPayload.color) {
       pageData.labelColor = fetchedPayload.color;
     }
+    applyGlobalLabelColor();
     if (productHandle && fetchedLabels[productHandle]) {
       pageData.product = pageData.product || {};
       pageData.product.handle = productHandle;
@@ -280,5 +286,6 @@
   const observer = new MutationObserver(() => applyAll());
   observer.observe(document.body, { childList: true, subtree: true });
 
+  applyGlobalLabelColor();
   applyAll();
 })();
