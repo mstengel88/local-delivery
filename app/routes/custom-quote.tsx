@@ -664,37 +664,18 @@ export default function PublicCustomQuotePage() {
       actionData.selectedLines
         ?.map(
           (line: any) =>
-            `${line.title} (${line.sku}) x ${line.quantity} — $${(
-              Number(line.price || 0) * line.quantity
+            `${line.title}: $${(
+              Number(line.price || 0) * Number(line.quantity || 0)
             ).toFixed(2)}`,
         )
         .join("\n") || "";
 
     return [
-      `Audience: ${
-        actionData.quoteAudience === "contractor"
-          ? "Contractor"
-          : actionData.quoteAudience === "custom"
-            ? "Custom"
-            : "Customer"
-      }`,
-      `Pricing Tier: ${actionData.pricing.pricingLabel}`,
-      `Customer: ${actionData.customerName || ""}`,
-      `Email: ${actionData.customerEmail || ""}`,
-      `Phone: ${actionData.customerPhone || ""}`,
-      `Products Subtotal: $${Number(actionData.pricing.productsSubtotal).toFixed(2)}`,
-      actionData.shippingCalculationText
-        ? `Shipping Calc: ${actionData.shippingCalculationText}`
-        : `Delivery: $${Number(actionData.pricing.deliveryAmount).toFixed(2)}`,
+      linesText,
+      `Products: $${Number(actionData.pricing.productsSubtotal).toFixed(2)}`,
+      `Delivery: $${Number(actionData.pricing.deliveryAmount).toFixed(2)}`,
       `Tax: $${Number(actionData.pricing.taxAmount).toFixed(2)}`,
       `TOTAL: $${Number(actionData.pricing.totalAmount).toFixed(2)}`,
-      `Delivery Service: ${actionData.deliveryQuote.serviceName}`,
-      `ETA: ${actionData.deliveryQuote.eta}`,
-      actionData.shippingCalculationText
-        ? `Custom Shipping: ${actionData.deliveryQuote.description}`
-        : `Notes: ${actionData.deliveryQuote.description}`,
-      "",
-      linesText,
     ]
       .filter(Boolean)
       .join("\n");
