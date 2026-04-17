@@ -697,6 +697,8 @@ export default function PublicCustomQuotePage() {
       `Delivery Fee: $${Number(actionData.pricing.deliveryAmount).toFixed(2)}`,
       `Tax: $${Number(actionData.pricing.taxAmount).toFixed(2)}`,
       `Total: $${Number(actionData.pricing.totalAmount).toFixed(2)}`,
+      "",
+      "Please let us know if you have any questions or would like to proceed with your order.",
     ]
       .filter(Boolean)
       .join("\n");
