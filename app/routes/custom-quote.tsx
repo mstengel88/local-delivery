@@ -97,6 +97,24 @@ function getSourceBreakdown(
   return Array.from(grouped.values());
 }
 
+function formatQuantityWithUnit(quantity: number, unitLabel?: string | null) {
+  const normalizedQuantity = Number.isInteger(quantity)
+    ? String(quantity)
+    : quantity.toFixed(2).replace(/\.?0+$/, "");
+  const baseUnit = String(unitLabel || "")
+    .trim()
+    .replace(/^per\s+/i, "")
+    .trim();
+  const normalizedUnit =
+    baseUnit && quantity !== 1 && !baseUnit.toLowerCase().endsWith("s")
+      ? `${baseUnit}S`
+      : baseUnit;
+
+  return normalizedUnit
+    ? `${normalizedQuantity} ${normalizedUnit}`
+    : `Qty ${normalizedQuantity}`;
+}
+
 export async function loader({ request }: any) {
   const url = new URL(request.url);
 
@@ -233,6 +251,7 @@ export async function action({ request }: any) {
         title: overrideTitle || product.title,
         sku: product.sku,
         vendor: product.vendor,
+        unitLabel: product.unitLabel || "",
         quantity,
         price: unitPrice,
       };
@@ -241,6 +260,7 @@ export async function action({ request }: any) {
     title: string;
     sku: string;
     vendor: string;
+    unitLabel?: string;
     quantity: number;
     price: number;
   }>;
@@ -664,7 +684,9 @@ export default function PublicCustomQuotePage() {
       actionData.selectedLines
         ?.map(
           (line: any) =>
-            `${line.title}: $${(
+            `${formatQuantityWithUnit(Number(line.quantity || 0), line.unitLabel)} ${
+              line.title
+            }: $${(
               Number(line.price || 0) * Number(line.quantity || 0)
             ).toFixed(2)}`,
         )
@@ -672,10 +694,9 @@ export default function PublicCustomQuotePage() {
 
     return [
       linesText,
-      `Products: $${Number(actionData.pricing.productsSubtotal).toFixed(2)}`,
-      `Delivery: $${Number(actionData.pricing.deliveryAmount).toFixed(2)}`,
+      `Delivery Fee: $${Number(actionData.pricing.deliveryAmount).toFixed(2)}`,
       `Tax: $${Number(actionData.pricing.taxAmount).toFixed(2)}`,
-      `TOTAL: $${Number(actionData.pricing.totalAmount).toFixed(2)}`,
+      `Total: $${Number(actionData.pricing.totalAmount).toFixed(2)}`,
     ]
       .filter(Boolean)
       .join("\n");

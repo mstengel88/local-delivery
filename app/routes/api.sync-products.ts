@@ -18,12 +18,15 @@ export async function action({ request }: any) {
       "synced",
       products.length,
       "variants",
+      "unit labels",
+      products.filter((product) => product.unitLabel).length,
     );
 
     return data({
       ok: true,
       shop: session.shop,
       syncedCount: products.length,
+      syncedUnitLabelCount: products.filter((product) => product.unitLabel).length,
     });
   } catch (error: any) {
     console.error("[SYNC PRODUCTS ERROR]", error);

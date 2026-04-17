@@ -6,6 +6,7 @@ export type QuoteProductOption = {
   title: string;
   vendor: string;
   imageUrl?: string;
+  unitLabel?: string;
   price?: number;
   contractorTier1Price?: number;
   contractorTier2Price?: number;
@@ -17,6 +18,8 @@ type ProductSourceMapRow = {
   product_title: string | null;
   pickup_vendor: string | null;
   image_url: string | null;
+  unit_label?: string | null;
+  price_unit_label?: string | null;
   price: number | string | null;
 };
 
@@ -33,6 +36,12 @@ type ShopifyProductVariantNode = {
 type ShopifyProductNode = {
   title?: string | null;
   vendor?: string | null;
+  metafield?: {
+    value?: string | null;
+  } | null;
+  legacyUnitLabel?: {
+    value?: string | null;
+  } | null;
   featuredImage?: {
     url?: string | null;
   } | null;
@@ -76,6 +85,7 @@ export async function getProductOptionsFromSupabase(): Promise<
       title: row.product_title || row.sku,
       vendor: row.pickup_vendor || "",
       imageUrl: row.image_url || "",
+      unitLabel: row.unit_label || row.price_unit_label || "",
       price: toNumberOrUndefined(row.price),
       contractorTier1Price: toNumberOrUndefined(
         row.contractor_tier_1_price ?? row.tier_1_price,
@@ -110,7 +120,7 @@ export async function syncProductOptionsToSupabase(
   const skus = products.map((product) => product.sku);
   const { data: existingRows, error: existingError } = await supabaseAdmin
     .from("product_source_map")
-    .select("sku, variant_id, product_title, pickup_vendor, image_url, price")
+    .select("sku, variant_id, product_title, pickup_vendor, image_url, unit_label, price")
     .in("sku", skus);
 
   if (existingError) {
@@ -134,6 +144,7 @@ export async function syncProductOptionsToSupabase(
       product_title: product.title || existing?.product_title || product.sku,
       pickup_vendor: product.vendor || existing?.pickup_vendor || "",
       image_url: product.imageUrl || existing?.image_url || null,
+      unit_label: product.unitLabel || existing?.unit_label || null,
       price:
         product.price === null || product.price === undefined
           ? existing?.price === null || existing?.price === undefined
@@ -161,6 +172,12 @@ export async function fetchProductOptionsFromShopify(admin: ShopifyAdminClient) 
         nodes {
           title
           vendor
+          metafield(namespace: "green_hills", key: "price_unit_label") {
+            value
+          }
+          legacyUnitLabel: metafield(namespace: "$app", key: "price_unit_label") {
+            value
+          }
           featuredImage {
             url
           }
@@ -188,6 +205,8 @@ export async function fetchProductOptionsFromShopify(admin: ShopifyAdminClient) 
     const productTitle = product?.title || "";
     const vendor = product?.vendor || "";
     const productImage = product?.featuredImage?.url || "";
+    const unitLabel =
+      product?.metafield?.value || product?.legacyUnitLabel?.value || "";
 
     for (const variant of product?.variants?.nodes || []) {
       const sku = (variant?.sku || "").trim();
@@ -205,6 +224,7 @@ export async function fetchProductOptionsFromShopify(admin: ShopifyAdminClient) 
         title,
         vendor,
         imageUrl: variant?.image?.url || productImage || "",
+        unitLabel,
         price:
           variant?.price === null || variant?.price === undefined
             ? undefined
