@@ -79,7 +79,13 @@ type DistanceMatrixRow = {
 
 type DistanceMatrixResponse = {
   status?: string;
+  error_message?: string;
   rows?: DistanceMatrixRow[];
+};
+
+type DistanceMatrixResult = {
+  matrix: (DistancePoint | null)[][] | null;
+  error?: string;
 };
 
 const TTL_SHORT = 60_000;
@@ -300,14 +306,16 @@ async function getDistanceMatrix(
   origins: string[],
   destinations: string[],
   googleMapsApiKey: string,
-): Promise<(DistancePoint | null)[][] | null> {
+): Promise<DistanceMatrixResult> {
   const originKey = origins.map(normalizeAddressKey).join("||");
   const destinationKey = destinations.map(normalizeAddressKey).join("||");
   const cacheKey = `${originKey}>>>${destinationKey}`;
 
   const cached = distanceMatrixCache.get(cacheKey);
   const cachedValue = getCache(cached || null);
-  if (cachedValue !== null) return cachedValue;
+  if (cachedValue !== null) {
+    return { matrix: cachedValue };
+  }
 
   const mapsUrl = new URL("https://maps.googleapis.com/maps/api/distancematrix/json");
   mapsUrl.searchParams.set("origins", origins.join("|"));
@@ -315,12 +323,22 @@ async function getDistanceMatrix(
   mapsUrl.searchParams.set("key", googleMapsApiKey);
   mapsUrl.searchParams.set("units", "imperial");
 
-  const res = await fetch(mapsUrl.toString());
-  const data = (await res.json()) as DistanceMatrixResponse;
+  let data: DistanceMatrixResponse;
+
+  try {
+    const res = await fetch(mapsUrl.toString());
+    data = (await res.json()) as DistanceMatrixResponse;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown network error";
+    console.error("[DISTANCE MATRIX ERROR]", message);
+    return { matrix: null, error: message };
+  }
 
   if (data.status !== "OK" || !data.rows) {
+    const message = [data.status, data.error_message].filter(Boolean).join(": ");
+    console.error("[DISTANCE MATRIX ERROR]", message || "Unknown Google response");
     distanceMatrixCache.set(cacheKey, setCache(null, TTL_SHORT));
-    return null;
+    return { matrix: null, error: message || "Unknown Google response" };
   }
 
   const matrix = data.rows.map((row) =>
@@ -342,7 +360,7 @@ async function getDistanceMatrix(
   );
 
   distanceMatrixCache.set(cacheKey, setCache(matrix, TTL_LONG));
-  return matrix;
+  return { matrix };
 }
 
 export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
@@ -475,16 +493,25 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
   const origins = [defaultYard.address, ...pickupAddresses, customerAddress];
   const destinations = [defaultYard.address, customerAddress];
 
-  const matrix = await getDistanceMatrix(origins, destinations, googleMapsApiKey);
+  const distanceMatrixResult = await getDistanceMatrix(
+    origins,
+    destinations,
+    googleMapsApiKey,
+  );
+  const matrix = distanceMatrixResult.matrix;
 
   if (!matrix) {
     return {
       serviceName: "Delivery Unavailable",
       serviceCode: "CUSTOM_DELIVERY",
       cents: 0,
-      description: "Unable to calculate delivery route",
+      description: distanceMatrixResult.error
+        ? `Unable to calculate delivery route (${distanceMatrixResult.error})`
+        : "Unable to calculate delivery route",
       eta: "Unavailable",
-      summary: "Unable to calculate delivery route",
+      summary: distanceMatrixResult.error
+        ? `Unable to calculate delivery route (${distanceMatrixResult.error})`
+        : "Unable to calculate delivery route",
     };
   }
 
