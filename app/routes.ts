@@ -5,6 +5,7 @@ export default [
 
   route("custom-quote", "routes/custom-quote.tsx"),
   route("quote-review", "routes/quote-review.tsx"),
+  route("pos-shipping", "routes/pos-shipping.tsx"),
 
   route("auth/login", "routes/auth.login/route.tsx"),
   route("auth/*", "routes/auth.$.tsx"),
