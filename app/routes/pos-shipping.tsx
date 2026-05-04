@@ -84,21 +84,7 @@ export default function PosShippingCalculator() {
 
   const copyText = useMemo(() => {
     if (!result) return "";
-
-    const lines = [
-      `Delivery Fee: ${formatMoney(result.cents)}`,
-      result.serviceName ? `Service: ${result.serviceName}` : "",
-      result.eta ? `ETA: ${result.eta}` : "",
-      result.description ? `Notes: ${result.description}` : "",
-    ].filter(Boolean);
-
-    if (result.outsideDeliveryArea) {
-      lines.push(
-        `Outside delivery area. Call ${result.outsideDeliveryPhone || "(262) 345-4001"}.`,
-      );
-    }
-
-    return lines.join("\n");
+    return ((Number(result.cents) || 0) / 100).toFixed(2);
   }, [result]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
