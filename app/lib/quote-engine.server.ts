@@ -228,6 +228,11 @@ function normalizeSku(value?: string | null): string {
   return (value || "").trim();
 }
 
+function getItemLoadKey(item: QuoteItem, materialName: string): string {
+  const sku = normalizeSku(item.sku).toLowerCase();
+  return sku || materialName.trim().toLowerCase() || "material";
+}
+
 function getMaterialFromSku(
   sku: string | undefined,
   rules: MaterialRule[],
@@ -444,6 +449,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
     const itemQty = item.quantity || 1;
     const { prefix, materialName, truckCapacity, fallbackVendorSource } =
       getMaterialFromSku(item.sku, materialRules);
+    const itemLoadKey = getItemLoadKey(item, materialName);
 
     const pickupVendorLabel =
       item.pickupVendor || fallbackVendorSource || defaultYard.label;
@@ -461,6 +467,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
       pickupOrigin.address,
       pickupOrigin.label,
       materialName,
+      itemLoadKey,
       truckCapacity,
     ].join("|");
 
