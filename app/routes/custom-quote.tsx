@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Form, useActionData, useFetcher, useLoaderData, useLocation, useNavigation } from "react-router";
 import { data, redirect } from "react-router";
 import {
@@ -32,6 +32,49 @@ type QuoteLine = {
   customTitle?: string;
   customPrice?: string;
 };
+
+const WHOLE_NUMBER_ERROR = "Whole Numbers Only Allowed.";
+const SAVED_QUOTE_FALLBACK_TAX_RATE = 0.055;
+
+function isWholeNumberInput(value: string) {
+  return value === "" || /^\d+$/.test(value);
+}
+
+function parseSavedDeliveryAmount(shippingDetails?: string | null) {
+  if (!shippingDetails) return null;
+
+  const exactMatch = shippingDetails.match(/=\s*\$?\s*(\d+(?:\.\d{1,2})?)/);
+  const deliveryMatch =
+    shippingDetails.match(/delivery(?: fee| amount)?:?\s*\$?\s*(\d+(?:\.\d{1,2})?)/i) ||
+    shippingDetails.match(/\$\s*(\d+(?:\.\d{1,2})?)/);
+  const value = Number(exactMatch?.[1] || deliveryMatch?.[1]);
+
+  return Number.isFinite(value) ? value : null;
+}
+
+function getSavedQuotePricingBreakdown(quote: SavedQuoteRecord | null) {
+  if (!quote) {
+    return { productTotal: 0, delivery: 0, tax: 0, total: 0 };
+  }
+
+  const productTotal = (quote.line_items || []).reduce(
+    (sum, line) => sum + Number(line.price || 0) * Number(line.quantity || 0),
+    0,
+  );
+  const total = Number(quote.quote_total_cents || 0) / 100;
+  const parsedDelivery = parseSavedDeliveryAmount(quote.shipping_details);
+
+  if (parsedDelivery !== null) {
+    const tax = Math.max(0, total - productTotal - parsedDelivery);
+    return { productTotal, delivery: parsedDelivery, tax, total };
+  }
+
+  const taxableSubtotal = total / (1 + SAVED_QUOTE_FALLBACK_TAX_RATE);
+  const delivery = Math.max(0, taxableSubtotal - productTotal);
+  const tax = Math.max(0, total - taxableSubtotal);
+
+  return { productTotal, delivery, tax, total };
+}
 
 type SavedQuoteRecord = {
   id: string;
@@ -233,6 +276,36 @@ export async function action({ request }: any) {
     Number.isFinite(customShippingQuantityValue) &&
     Number.isFinite(customShippingRateValue);
   const rawLines = JSON.parse(String(form.get("linesJson") || "[]"));
+  const hasDecimalQuantity = rawLines.some((line: any) => {
+    const quantity = String(line?.quantity || "").trim();
+    return quantity !== "" && !/^\d+$/.test(quantity);
+  });
+
+  if (hasDecimalQuantity) {
+    return data(
+      {
+        allowed: true,
+        products,
+        recentQuotes,
+        ok: false,
+        message: WHOLE_NUMBER_ERROR,
+        customerName,
+        customerEmail,
+        customerPhone,
+        address: { address1, address2, city, province, postalCode, country },
+        quoteAudience,
+        contractorTier,
+        customDeliveryAmount: customDeliveryAmountInput,
+        customTaxRate: customTaxRateInput,
+        customShippingQuantity: customShippingQuantityInput,
+        customShippingUnit,
+        customShippingRate: customShippingRateInput,
+        customNotes,
+        googleMapsApiKey: getBrowserGoogleMapsApiKey(),
+      },
+      { status: 400 },
+    );
+  }
 
   const selectedProducts = rawLines
     .map((line: any) => {
@@ -717,10 +790,15 @@ export default function PublicCustomQuotePage() {
       recentQuotes.find((quote) => quote.id === selectedHistoryQuoteId) || null,
     [recentQuotes, selectedHistoryQuoteId],
   );
+  const selectedHistoryPricing = useMemo(
+    () => getSavedQuotePricingBreakdown(selectedHistoryQuote),
+    [selectedHistoryQuote],
+  );
 
   const historyQuoteText = useMemo(() => {
     if (!selectedHistoryQuote) return "";
 
+    const pricing = getSavedQuotePricingBreakdown(selectedHistoryQuote);
     const linesText =
       selectedHistoryQuote.line_items
         ?.map((line) => {
@@ -734,13 +812,14 @@ export default function PublicCustomQuotePage() {
       `Email: ${selectedHistoryQuote.customer_email || ""}`,
       `Phone: ${selectedHistoryQuote.customer_phone || ""}`,
       `Address: ${selectedHistoryQuote.address1 || ""}, ${selectedHistoryQuote.city || ""}, ${selectedHistoryQuote.province || ""} ${selectedHistoryQuote.postal_code || ""}`,
-      `Total: $${(Number(selectedHistoryQuote.quote_total_cents || 0) / 100).toFixed(2)}`,
+      `Product Total: $${pricing.productTotal.toFixed(2)}`,
+      `Delivery: $${pricing.delivery.toFixed(2)}`,
+      `Tax: $${pricing.tax.toFixed(2)}`,
+      `Total: $${pricing.total.toFixed(2)}`,
       `Service: ${selectedHistoryQuote.service_name || ""}`,
       selectedHistoryQuote.shipping_details
         ? `Shipping Details: ${selectedHistoryQuote.shipping_details}`
         : null,
-      `ETA: ${selectedHistoryQuote.eta || ""}`,
-      `Summary: ${selectedHistoryQuote.summary || ""}`,
       `Notes: ${selectedHistoryQuote.description || ""}`,
       "",
       linesText,
@@ -753,6 +832,22 @@ export default function PublicCustomQuotePage() {
     setLines((prev) =>
       prev.map((line, i) => (i === index ? { ...line, ...patch } : line)),
     );
+  }
+
+  function updateLineQuantity(index: number, value: string) {
+    if (!isWholeNumberInput(value)) {
+      alert(WHOLE_NUMBER_ERROR);
+      return;
+    }
+
+    updateLine(index, { quantity: value });
+  }
+
+  function handleQuoteSubmit(event: FormEvent<HTMLFormElement>) {
+    if (lines.some((line) => !isWholeNumberInput(line.quantity))) {
+      event.preventDefault();
+      alert(WHOLE_NUMBER_ERROR);
+    }
   }
 
   function addLine() {
@@ -855,7 +950,7 @@ export default function PublicCustomQuotePage() {
           </div>
         </div>
 
-        <Form method="post" style={{ display: "grid", gap: "22px" }}>
+        <Form method="post" style={{ display: "grid", gap: "22px" }} onSubmit={handleQuoteSubmit}>
           <input type="hidden" name="quoteAudience" value={quoteAudience} />
           <input type="hidden" name="contractorTier" value={contractorTier} />
           <input type="hidden" name="linesJson" value={JSON.stringify(lines)} />
@@ -1114,10 +1209,10 @@ export default function PublicCustomQuotePage() {
                           type="number"
                           min="0"
                           step="1"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
                           value={line.quantity}
-                          onChange={(e) =>
-                            updateLine(index, { quantity: e.target.value })
-                          }
+                          onChange={(e) => updateLineQuantity(index, e.target.value)}
                           style={styles.input}
                         />
                       </div>
@@ -1774,16 +1869,24 @@ export default function PublicCustomQuotePage() {
                   {selectedHistoryQuote.province} {selectedHistoryQuote.postal_code}
                 </div>
                 <div>
+                  <strong style={{ color: "#93c5fd" }}>Product Total:</strong> $
+                  {selectedHistoryPricing.productTotal.toFixed(2)}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Delivery:</strong> $
+                  {selectedHistoryPricing.delivery.toFixed(2)}
+                </div>
+                <div>
+                  <strong style={{ color: "#93c5fd" }}>Tax:</strong> $
+                  {selectedHistoryPricing.tax.toFixed(2)}
+                </div>
+                <div>
                   <strong style={{ color: "#93c5fd" }}>Total:</strong> $
-                  {(Number(selectedHistoryQuote.quote_total_cents || 0) / 100).toFixed(2)}
+                  {selectedHistoryPricing.total.toFixed(2)}
                 </div>
                 <div>
                   <strong style={{ color: "#93c5fd" }}>Service:</strong>{" "}
                   {selectedHistoryQuote.service_name || "Quote"}
-                </div>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>ETA:</strong>{" "}
-                  {selectedHistoryQuote.eta || "N/A"}
                 </div>
                 {selectedHistoryQuote.shipping_details ? (
                   <div>
@@ -1791,10 +1894,6 @@ export default function PublicCustomQuotePage() {
                     {selectedHistoryQuote.shipping_details}
                   </div>
                 ) : null}
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Summary:</strong>{" "}
-                  {selectedHistoryQuote.summary || "N/A"}
-                </div>
                 <div>
                   <strong style={{ color: "#93c5fd" }}>Notes:</strong>{" "}
                   {selectedHistoryQuote.description || "N/A"}

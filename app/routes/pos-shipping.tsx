@@ -22,6 +22,12 @@ type EstimateResult = {
   outsideDeliveryPhone?: string;
 };
 
+const WHOLE_NUMBER_ERROR = "Whole Numbers Only Allowed.";
+
+function isWholeNumberInput(value: string) {
+  return value === "" || /^\d+$/.test(value);
+}
+
 const quickMaterials = [
   { label: "Aggregate", sku: "100" },
   { label: "Mulch", sku: "300" },
@@ -97,6 +103,12 @@ export default function PosShippingCalculator() {
     const submittedCountry = String(form.get("country") || country).trim() || "US";
     const submittedSku = String(form.get("sku") || sku).trim();
     const submittedQuantity = String(form.get("quantity") || quantity).trim();
+
+    if (!isWholeNumberInput(submittedQuantity) || submittedQuantity === "") {
+      alert(WHOLE_NUMBER_ERROR);
+      setError(WHOLE_NUMBER_ERROR);
+      return;
+    }
 
     setIsLoading(true);
     setError("");
@@ -272,9 +284,17 @@ export default function PosShippingCalculator() {
                 type="number"
                 name="quantity"
                 min="1"
-                step="0.01"
+                step="1"
+                inputMode="numeric"
+                pattern="[0-9]*"
                 value={quantity}
-                onChange={(event) => setQuantity(event.target.value)}
+                onChange={(event) => {
+                  if (!isWholeNumberInput(event.target.value)) {
+                    alert(WHOLE_NUMBER_ERROR);
+                    return;
+                  }
+                  setQuantity(event.target.value);
+                }}
                 required
               />
             </label>

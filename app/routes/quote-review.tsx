@@ -12,6 +12,48 @@ function formatMoney(cents: number | null | undefined) {
   return `$${(Number(cents || 0) / 100).toFixed(2)}`;
 }
 
+const SAVED_QUOTE_FALLBACK_TAX_RATE = 0.055;
+
+function formatDollars(value: number) {
+  return `$${Number(value || 0).toFixed(2)}`;
+}
+
+function parseSavedDeliveryAmount(shippingDetails?: string | null) {
+  if (!shippingDetails) return null;
+
+  const exactMatch = shippingDetails.match(/=\s*\$?\s*(\d+(?:\.\d{1,2})?)/);
+  const deliveryMatch =
+    shippingDetails.match(/delivery(?: fee| amount)?:?\s*\$?\s*(\d+(?:\.\d{1,2})?)/i) ||
+    shippingDetails.match(/\$\s*(\d+(?:\.\d{1,2})?)/);
+  const value = Number(exactMatch?.[1] || deliveryMatch?.[1]);
+
+  return Number.isFinite(value) ? value : null;
+}
+
+function getSavedQuotePricingBreakdown(quote: SavedCustomQuote | null) {
+  if (!quote) {
+    return { productTotal: 0, delivery: 0, tax: 0, total: 0 };
+  }
+
+  const productTotal = (quote.line_items || []).reduce(
+    (sum, line) => sum + Number(line.price || 0) * Number(line.quantity || 0),
+    0,
+  );
+  const total = Number(quote.quote_total_cents || 0) / 100;
+  const parsedDelivery = parseSavedDeliveryAmount(quote.shipping_details);
+
+  if (parsedDelivery !== null) {
+    const tax = Math.max(0, total - productTotal - parsedDelivery);
+    return { productTotal, delivery: parsedDelivery, tax, total };
+  }
+
+  const taxableSubtotal = total / (1 + SAVED_QUOTE_FALLBACK_TAX_RATE);
+  const delivery = Math.max(0, taxableSubtotal - productTotal);
+  const tax = Math.max(0, total - taxableSubtotal);
+
+  return { productTotal, delivery, tax, total };
+}
+
 function buildQuoteSearchText(quote: SavedCustomQuote) {
   const lineText = (quote.line_items || [])
     .map((line) =>
@@ -250,6 +292,10 @@ export default function QuoteReviewPage() {
     filteredQuotes.find((quote) => quote.id === selectedQuoteId) ||
     filteredQuotes[0] ||
     null;
+  const selectedQuotePricing = useMemo(
+    () => getSavedQuotePricingBreakdown(selectedQuote),
+    [selectedQuote],
+  );
 
   useEffect(() => {
     if (deleteQuoteFetcher.data?.ok && deleteQuoteFetcher.data?.deletedQuoteId) {
@@ -481,13 +527,14 @@ export default function QuoteReviewPage() {
                       {selectedQuote.province} {selectedQuote.postal_code}
                     </div>
                     <div><strong>Country:</strong> {selectedQuote.country || "US"}</div>
-                    <div><strong>Total:</strong> {formatMoney(selectedQuote.quote_total_cents)}</div>
+                    <div><strong>Product Total:</strong> {formatDollars(selectedQuotePricing.productTotal)}</div>
+                    <div><strong>Delivery:</strong> {formatDollars(selectedQuotePricing.delivery)}</div>
+                    <div><strong>Tax:</strong> {formatDollars(selectedQuotePricing.tax)}</div>
+                    <div><strong>Total:</strong> {formatDollars(selectedQuotePricing.total)}</div>
                     <div><strong>Service:</strong> {selectedQuote.service_name || "Quote"}</div>
-                    <div><strong>ETA:</strong> {selectedQuote.eta || "N/A"}</div>
                     {selectedQuote.shipping_details ? (
                       <div><strong>Shipping Details:</strong> {selectedQuote.shipping_details}</div>
                     ) : null}
-                    <div><strong>Summary:</strong> {selectedQuote.summary || "N/A"}</div>
                     <div><strong>Notes:</strong> {selectedQuote.description || "N/A"}</div>
                   </div>
 
