@@ -4,7 +4,14 @@ import { getQuote } from "../lib/quote-engine.server";
 
 export async function action({ request }: ActionFunctionArgs) {
   const url = new URL(request.url);
-  const body = await request.json();
+  let body: any;
+
+  try {
+    body = await request.json();
+  } catch (error) {
+    console.error("[CARRIER SERVICE FAIL CLOSED] Invalid request body", error);
+    return data({ rates: [] });
+  }
 
   const rate = body?.rate ?? {};
   const destination = rate.destination ?? {};
@@ -18,7 +25,8 @@ export async function action({ request }: ActionFunctionArgs) {
     "";
 
   if (!shop) {
-    throw new Error("Missing shop parameter");
+    console.error("[CARRIER SERVICE FAIL CLOSED] Missing shop parameter");
+    return data({ rates: [] });
   }
 
   const mappedItems = items.map((item: any) => ({
@@ -33,18 +41,38 @@ export async function action({ request }: ActionFunctionArgs) {
   console.log("[CARRIER SHOP]", shop);
   console.log("[MAPPED ITEMS]", JSON.stringify(mappedItems, null, 2));
 
-  const quote = await getQuote({
-    shop,
-    postalCode: destination.postal_code ?? "",
-    country: destination.country ?? "US",
-    province: destination.province ?? "",
-    city: destination.city ?? "",
-    address1: destination.address1 ?? "",
-    address2: destination.address2 ?? "",
-    items: mappedItems,
-  });
+  let quote;
+
+  try {
+    quote = await getQuote({
+      shop,
+      postalCode: destination.postal_code ?? "",
+      country: destination.country ?? "US",
+      province: destination.province ?? "",
+      city: destination.city ?? "",
+      address1: destination.address1 ?? "",
+      address2: destination.address2 ?? "",
+      items: mappedItems,
+    });
+  } catch (error) {
+    console.error("[CARRIER SERVICE FAIL CLOSED] Quote calculation failed", error);
+    return data({ rates: [] });
+  }
 
   console.log("[QUOTE RESULT]", JSON.stringify(quote, null, 2));
+
+  if (
+    quote.serviceName === "Delivery Unavailable" ||
+    quote.eta === "Unavailable" ||
+    quote.summary === "Unable to calculate delivery route"
+  ) {
+    console.error("[CARRIER SERVICE FAIL CLOSED] Delivery quote unavailable", {
+      serviceName: quote.serviceName,
+      description: quote.description,
+      summary: quote.summary,
+    });
+    return data({ rates: [] });
+  }
 
   if (quote.outsideDeliveryArea) {
     return data({
