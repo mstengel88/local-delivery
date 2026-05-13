@@ -161,8 +161,8 @@ function App() {
         {
           message:
             estimateState.status === 'error'
-              ? `We could not verify delivery for this address. Please choose in-store pickup or call ${phone}.`
-              : `This address is outside our ${radius}-mile delivery area. Please choose in-store pickup or call ${phone} for a delivery quote.`,
+              ? `Shipping is not available for this address. Please choose in-store pickup or call/text ${phone} for a custom quote.`
+              : `Shipping is not available for this address because it is outside our ${radius}-mile delivery area. Please choose in-store pickup or call/text ${phone} for a custom quote.`,
         },
       ],
     };
@@ -179,17 +179,17 @@ function App() {
         background="subdued"
       >
         <s-stack gap="large">
-          <s-heading>Delivery unavailable for this address</s-heading>
+          <s-heading>Shipping not available</s-heading>
 
           <s-text>
             {estimateState.status === 'error'
-              ? 'We could not verify this address for delivery.'
-              : `This address is outside our ${radius}-mile delivery area.`}
+              ? 'Shipping is not available for this address.'
+              : `Shipping is not available for this address because it is outside our ${radius}-mile delivery area.`}
           </s-text>
 
           <s-text appearance="subdued">
-            Please select in-store pickup to finish checkout. For a custom
-            delivery quote, call {phone}.
+            Please choose in-store pickup to complete checkout, or call/text
+            {` ${phone} `}for a custom delivery quote.
           </s-text>
 
           {pickupSelected ? (
@@ -204,7 +204,7 @@ function App() {
 
           <s-stack direction="inline" gap="base">
             <s-button href={PHONE_LINK} appearance="primary">
-              Call {phone}
+              Call/Text {phone}
             </s-button>
 
             <s-button command="--show" commandFor={MODAL_ID}>
@@ -214,12 +214,12 @@ function App() {
         </s-stack>
       </s-box>
 
-      <s-modal id={MODAL_ID} heading="Delivery unavailable">
+      <s-modal id={MODAL_ID} heading="Shipping not available">
         <s-stack gap="large">
           <s-text>
             {estimateState.status === 'error'
-              ? 'We could not verify this address for delivery.'
-              : `This address is outside our ${radius}-mile delivery area.`}
+              ? 'Shipping is not available for this address.'
+              : `Shipping is not available for this address because it is outside our ${radius}-mile delivery area.`}
           </s-text>
 
           <s-box
@@ -232,7 +232,7 @@ function App() {
               <s-text emphasis="bold">What you can do</s-text>
               <s-text>• Choose in-store pickup and complete checkout</s-text>
               <s-text>• Enter a delivery address inside our delivery area</s-text>
-              <s-text>• Call us for a custom delivery quote</s-text>
+              <s-text>• Call or text us for a custom delivery quote</s-text>
             </s-stack>
           </s-box>
 
@@ -243,7 +243,7 @@ function App() {
             background="subdued"
           >
             <s-stack gap="tight">
-              <s-text emphasis="bold">Call for a quote</s-text>
+              <s-text emphasis="bold">Call/Text for a quote</s-text>
               <s-link href={PHONE_LINK}>{phone}</s-link>
             </s-stack>
           </s-box>
