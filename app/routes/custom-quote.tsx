@@ -246,6 +246,7 @@ export async function action({ request }: any) {
   const recentQuotes = await getRecentCustomQuotes(15);
 
   const customerName = String(form.get("customerName") || "");
+  const companyName = String(form.get("companyName") || "").trim();
   const customerEmail = String(form.get("customerEmail") || "").trim();
   const customerPhone = String(form.get("customerPhone") || "").trim();
   const address1 = String(form.get("address1") || "");
@@ -290,6 +291,34 @@ export async function action({ request }: any) {
         ok: false,
         message: WHOLE_NUMBER_ERROR,
         customerName,
+        companyName,
+        customerEmail,
+        customerPhone,
+        address: { address1, address2, city, province, postalCode, country },
+        quoteAudience,
+        contractorTier,
+        customDeliveryAmount: customDeliveryAmountInput,
+        customTaxRate: customTaxRateInput,
+        customShippingQuantity: customShippingQuantityInput,
+        customShippingUnit,
+        customShippingRate: customShippingRateInput,
+        customNotes,
+        googleMapsApiKey: getBrowserGoogleMapsApiKey(),
+      },
+      { status: 400 },
+    );
+  }
+
+  if (quoteAudience === "contractor" && !companyName) {
+    return data(
+      {
+        allowed: true,
+        products,
+        recentQuotes,
+        ok: false,
+        message: "Company Name is required for contractor quotes.",
+        customerName,
+        companyName,
         customerEmail,
         customerPhone,
         address: { address1, address2, city, province, postalCode, country },
@@ -356,6 +385,7 @@ export async function action({ request }: any) {
         message:
           "Add at least one product line with a selected product and quantity greater than 0.",
         customerName,
+        companyName,
         customerEmail,
         customerPhone,
         address: { address1, address2, city, province, postalCode, country },
@@ -382,6 +412,7 @@ export async function action({ request }: any) {
         ok: false,
         message: "Address 1, city, state, and ZIP are required.",
         customerName,
+        companyName,
         customerEmail,
         customerPhone,
         address: { address1, address2, city, province, postalCode, country },
@@ -495,6 +526,7 @@ export async function action({ request }: any) {
     recentQuotes,
     ok: true,
     customerName,
+    companyName,
     customerEmail,
     customerPhone,
     address: { address1, address2, city, province, postalCode, country },
@@ -710,6 +742,7 @@ export default function PublicCustomQuotePage() {
   const [contractorTier, setContractorTier] = useState<ContractorTier>(
     normalizeContractorTier(actionData?.contractorTier),
   );
+  const [companyName, setCompanyName] = useState(actionData?.companyName || "");
   const [lines, setLines] = useState<QuoteLine[]>([
     { sku: "", quantity: "", search: "", customTitle: "", customPrice: "" },
   ]);
@@ -844,6 +877,12 @@ export default function PublicCustomQuotePage() {
   }
 
   function handleQuoteSubmit(event: FormEvent<HTMLFormElement>) {
+    if (quoteAudience === "contractor" && !companyName.trim()) {
+      event.preventDefault();
+      alert("Company Name is required for contractor quotes.");
+      return;
+    }
+
     if (lines.some((line) => !isWholeNumberInput(line.quantity))) {
       event.preventDefault();
       alert(WHOLE_NUMBER_ERROR);
@@ -1034,6 +1073,23 @@ export default function PublicCustomQuotePage() {
                   style={styles.input}
                 />
               </div>
+
+              {quoteAudience === "contractor" ? (
+                <div>
+                  <label style={styles.label}>Company Name</label>
+                  <input
+                    type="text"
+                    name="companyName"
+                    autoComplete="organization"
+                    required
+                    value={companyName}
+                    onChange={(event) => setCompanyName(event.target.value)}
+                    style={styles.input}
+                  />
+                </div>
+              ) : (
+                <input type="hidden" name="companyName" value={companyName} />
+              )}
 
               <div>
                 <label style={styles.label}>Email Address</label>
