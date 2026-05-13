@@ -75,17 +75,13 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   if (quote.outsideDeliveryArea) {
-    return data({
-      rates: [
-        {
-          service_name: "Call for delivery quote",
-          service_code: "CALL_FOR_QUOTE",
-          total_price: "1",
-          description: "Outside delivery area — please call for custom quote",
-          currency: rate.currency ?? "USD",
-        },
-      ],
+    console.error("[CARRIER SERVICE FAIL CLOSED] Outside delivery area", {
+      serviceName: quote.serviceName,
+      description: quote.description,
+      outsideDeliveryMiles: quote.outsideDeliveryMiles,
+      outsideDeliveryRadius: quote.outsideDeliveryRadius,
     });
+    return data({ rates: [] });
   }
 
   return data({
