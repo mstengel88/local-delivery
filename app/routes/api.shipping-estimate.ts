@@ -1,8 +1,26 @@
-import type { ActionFunctionArgs } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { data } from "react-router";
 import { getQuote } from "../lib/quote-engine.server";
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+export async function loader({ request }: LoaderFunctionArgs) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
+  return data({ ok: false, message: "Method not allowed" }, { status: 405, headers: corsHeaders });
+}
+
 export async function action({ request }: ActionFunctionArgs) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
   const body = await request.json();
 
   const shippingAddress = body?.shippingAddress ?? {};
@@ -38,15 +56,18 @@ export async function action({ request }: ActionFunctionArgs) {
     })),
   });
 
-  return data({
-    summary: quote.summary,
-    eta: quote.eta,
-    description: quote.description,
-    cents: quote.cents,
-    serviceName: quote.serviceName,
-    outsideDeliveryArea: quote.outsideDeliveryArea ?? false,
-    outsideDeliveryMiles: quote.outsideDeliveryMiles ?? 0,
-    outsideDeliveryRadius: quote.outsideDeliveryRadius ?? 50,
-    outsideDeliveryPhone: quote.outsideDeliveryPhone ?? "(262) 345-4001",
-  });
+  return data(
+    {
+      summary: quote.summary,
+      eta: quote.eta,
+      description: quote.description,
+      cents: quote.cents,
+      serviceName: quote.serviceName,
+      outsideDeliveryArea: quote.outsideDeliveryArea ?? false,
+      outsideDeliveryMiles: quote.outsideDeliveryMiles ?? 0,
+      outsideDeliveryRadius: quote.outsideDeliveryRadius ?? 50,
+      outsideDeliveryPhone: quote.outsideDeliveryPhone ?? "(262) 345-4001",
+    },
+    { headers: corsHeaders },
+  );
 }

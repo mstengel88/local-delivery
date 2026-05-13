@@ -12,3 +12,4 @@ target = "purchase.checkout.block.render"
 
 [extensions.capabilities]
 block_progress = true
+network_access = true
