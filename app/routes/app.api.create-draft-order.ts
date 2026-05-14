@@ -22,6 +22,49 @@ function buildQuoteTag(quoteId: string) {
   return `quote:${normalized.slice(0, 34)}`;
 }
 
+function usdMoney(amount: number) {
+  return {
+    amount: Number(amount || 0).toFixed(2),
+    currencyCode: "USD",
+  };
+}
+
+function parseSavedDeliveryAmountCents(shippingDetails?: string | null) {
+  if (!shippingDetails) return null;
+  const exactMatch = shippingDetails.match(/=\s*\$?\s*(\d+(?:\.\d{1,2})?)/);
+  const fallbackMatch =
+    shippingDetails.match(/delivery(?: fee| amount)?:?\s*\$?\s*(\d+(?:\.\d{1,2})?)/i) ||
+    shippingDetails.match(/\$\s*(\d+(?:\.\d{1,2})?)/);
+  const amount = Number(exactMatch?.[1] || fallbackMatch?.[1] || NaN);
+  return Number.isFinite(amount) ? Math.round(amount * 100) : null;
+}
+
+function getConfiguredQuoteTaxRate() {
+  const rate = Number(process.env.QUOTE_TAX_RATE || "0");
+  return Number.isFinite(rate) && rate > 0 ? rate : 0;
+}
+
+function getDeliveryChargeCents({
+  quoteTotalCents,
+  productsSubtotalCents,
+  shippingDetails,
+}: {
+  quoteTotalCents: number;
+  productsSubtotalCents: number;
+  shippingDetails?: string | null;
+}) {
+  const parsedDeliveryCents = parseSavedDeliveryAmountCents(shippingDetails);
+  if (parsedDeliveryCents !== null) return Math.max(0, parsedDeliveryCents);
+
+  const taxRate = getConfiguredQuoteTaxRate();
+  if (taxRate > 0) {
+    const subtotalBeforeTaxCents = Math.round(quoteTotalCents / (1 + taxRate));
+    return Math.max(0, subtotalBeforeTaxCents - productsSubtotalCents);
+  }
+
+  return Math.max(0, quoteTotalCents - productsSubtotalCents);
+}
+
 function splitCustomerName(name: string | null | undefined) {
   const normalized = String(name || "").trim();
   if (!normalized) return { firstName: undefined, lastName: undefined };
@@ -148,10 +191,11 @@ export async function action({ request }: { request: Request }) {
       sum + Math.round(Number(line.price || 0) * 100) * Number(line.quantity || 0),
     0,
   );
-  const remainingChargeCents = Math.max(
-    0,
-    Number(quote.quote_total_cents || 0) - productsSubtotalCents,
-  );
+  const deliveryChargeCents = getDeliveryChargeCents({
+    quoteTotalCents: Number(quote.quote_total_cents || 0),
+    productsSubtotalCents,
+    shippingDetails: quote.shipping_details,
+  });
 
   const draftLineItems = lineItems.map((line) => {
     const variantId =
@@ -163,6 +207,7 @@ export async function action({ request }: { request: Request }) {
       return {
         variantId,
         quantity: Number(line.quantity || 0),
+        priceOverride: usdMoney(Number(line.price || 0)),
         customAttributes: [
           { key: "Quote ID", value: quote.id },
           { key: "Quoted Unit Price", value: Number(line.price || 0).toFixed(2) },
@@ -176,10 +221,7 @@ export async function action({ request }: { request: Request }) {
       quantity: Number(line.quantity || 0),
       requiresShipping: true,
       taxable: false,
-      originalUnitPriceWithCurrency: {
-        amount: Number(line.price || 0).toFixed(2),
-        currencyCode: "USD",
-      },
+      originalUnitPriceWithCurrency: usdMoney(Number(line.price || 0)),
       customAttributes: [{ key: "Quote ID", value: quote.id }],
     };
   });
@@ -232,6 +274,8 @@ export async function action({ request }: { request: Request }) {
           email: quote.customer_email || undefined,
           customerId: customerId || undefined,
           tags: ["custom-quote", buildQuoteTag(quote.id)],
+          acceptAutomaticDiscounts: false,
+          allowDiscountCodesInCheckout: false,
           shippingAddress: {
             firstName: customerName.firstName,
             lastName: customerName.lastName,
@@ -255,14 +299,14 @@ export async function action({ request }: { request: Request }) {
             phone: quote.customer_phone || undefined,
           },
           lineItems: draftLineItems,
-          ...(remainingChargeCents > 0
+          ...(deliveryChargeCents > 0
             ? {
                 shippingLine: {
                   title: truncateShopifyTitle(
-                    quote.service_name || "Quoted Delivery / Tax",
+                    quote.service_name || "Quoted Delivery",
                   ),
                   priceWithCurrency: {
-                    amount: (remainingChargeCents / 100).toFixed(2),
+                    amount: (deliveryChargeCents / 100).toFixed(2),
                     currencyCode: "USD",
                   },
                 },

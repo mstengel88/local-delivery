@@ -483,6 +483,8 @@ export async function action({ request }: any) {
   const shippingCalculationText = hasCustomShippingCalculation
     ? `${customShippingQuantityValue.toFixed(2)} ${customShippingUnit} x $${customShippingRateValue.toFixed(2)} = $${effectiveDeliveryAmount.toFixed(2)}`
     : null;
+  const savedShippingDetails =
+    shippingCalculationText || `Delivery Fee: $${effectiveDeliveryAmount.toFixed(2)}`;
 
   const sourceBreakdown = getSourceBreakdown(selectedProducts);
 
@@ -502,7 +504,7 @@ export async function action({ request }: any) {
       country,
       quoteTotalCents: Math.round(totalAmount * 100),
       serviceName: effectiveServiceName,
-      shippingDetails: shippingCalculationText || undefined,
+      shippingDetails: savedShippingDetails,
       description: `${effectiveDescription} Pricing: ${pricingLabel}.`,
       eta: effectiveEta,
       summary: undefined,
