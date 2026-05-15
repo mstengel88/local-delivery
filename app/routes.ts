@@ -24,12 +24,14 @@ export default [
   route("api/sync-products", "routes/api.sync-products.ts"),
   route("api/create-draft-order", "routes/api.create-draft-order.ts"),
   route("api/delete-quote", "routes/api.delete-quote.ts"),
+  route("api/update-quote", "routes/api.update-quote.ts"),
   route("api/unit-labels", "routes/api.unit-labels.ts"),
 
   route("app/api/shipping-estimate", "routes/app.api.shipping-estimate.ts"),
   route("app/api/carrier-service", "routes/app.api.carrier-service.ts"),
   route("app/api/create-draft-order", "routes/app.api.create-draft-order.ts"),
   route("app/api/delete-quote", "routes/app.api.delete-quote.ts"),
+  route("app/api/update-quote", "routes/app.api.update-quote.ts"),
 
   route("webhooks/products/update", "routes/webhooks.products.update.ts"),
   route("webhooks/app/scopes_update", "routes/webhooks.app.scopes_update.tsx"),
