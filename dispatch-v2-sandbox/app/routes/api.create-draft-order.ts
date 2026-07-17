@@ -348,6 +348,11 @@ export async function action({ request }: { request: Request }) {
       ? {
           paymentTerms: {
             paymentTermsTemplateId,
+            paymentSchedules: [
+              {
+                issuedAt: new Date().toISOString(),
+              },
+            ],
           },
         }
       : {}),
