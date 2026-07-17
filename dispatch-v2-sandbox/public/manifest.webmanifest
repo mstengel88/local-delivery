@@ -1,0 +1,48 @@
+{
+  "name": "Green Hills Dispatch",
+  "short_name": "GH Dispatch",
+  "description": "Green Hills dispatch, routes, driver, loader, and delivery tracking.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "any",
+  "background_color": "#070b18",
+  "theme_color": "#070b18",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {
+      "src": "/pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/email-green-hills-logo.png",
+      "sizes": "800x620",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Board",
+      "short_name": "Board",
+      "url": "/",
+      "description": "Open the dispatch board."
+    },
+    {
+      "name": "Driver",
+      "short_name": "Driver",
+      "url": "/driver",
+      "description": "Open the driver route view."
+    },
+    {
+      "name": "Loader",
+      "short_name": "Loader",
+      "url": "/loader",
+      "description": "Open the loader queue."
+    }
+  ]
+}

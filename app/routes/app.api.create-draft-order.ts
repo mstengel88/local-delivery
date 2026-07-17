@@ -1,7 +1,7 @@
 import { data } from "react-router";
 import { getCustomQuoteById } from "../lib/custom-quotes.server";
 import { getProductOptionsFromSupabase } from "../lib/quote-products.server";
-import shopify, { authenticate } from "../shopify.server";
+import shopify from "../shopify.server";
 
 const SHOPIFY_TITLE_LIMIT = 40;
 
@@ -162,7 +162,6 @@ export async function action({ request }: { request: Request }) {
     return data({ ok: false, message: "Quote not found." }, { status: 404 });
   }
 
-  const isEmbeddedRequest = new URL(request.url).pathname.startsWith("/app/");
   const shop = quote.shop || process.env.SHOPIFY_STORE_DOMAIN || "";
 
   if (!shop) {
@@ -172,9 +171,9 @@ export async function action({ request }: { request: Request }) {
     );
   }
 
-  const adminClient = isEmbeddedRequest
-    ? await authenticate.admin(request)
-    : await shopify.unauthenticated.admin(shop);
+  // Payment terms are app-level B2B permissions. Using the embedded staff
+  // session can fail when that staff user cannot manage payment terms.
+  const adminClient = await shopify.unauthenticated.admin(shop);
   const admin = adminClient.admin;
 
   const products = await getProductOptionsFromSupabase();

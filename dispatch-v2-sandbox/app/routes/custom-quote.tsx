@@ -7,9 +7,9 @@ import {
 } from "../lib/custom-quotes.server";
 import {
   adminQuoteCookie,
-  getAdminQuotePassword,
-  hasAdminQuoteAccess,
+  hasAdminQuotePermissionAccess,
 } from "../lib/admin-quote-auth.server";
+import { getCurrentUser, logAuditEvent, userAuthCookie } from "../lib/user-auth.server";
 import {
   getProductOptionsFromSupabase,
   type QuoteProductOption,
@@ -22,8 +22,13 @@ import {
   type ContractorTier,
   type QuoteAudience,
 } from "../lib/quote-pricing";
+import { getConfiguredQuoteTaxRate } from "../lib/quote-tax";
 import { attachAddressAutocomplete, loadGooglePlaces } from "../lib/google-places";
 import { getQuote } from "../lib/quote-engine.server";
+import {
+  loadDispatchB2BCompanies,
+  type DispatchB2BCompany,
+} from "../lib/dispatch.server";
 
 type QuoteLine = {
   sku: string;
@@ -33,54 +38,14 @@ type QuoteLine = {
   customPrice?: string;
 };
 
-const WHOLE_NUMBER_ERROR = "Whole Numbers Only Allowed.";
-const SAVED_QUOTE_FALLBACK_TAX_RATE = 0.055;
-
-function isWholeNumberInput(value: string) {
-  return value === "" || /^\d+$/.test(value);
-}
-
-function parseSavedDeliveryAmount(shippingDetails?: string | null) {
-  if (!shippingDetails) return null;
-
-  const exactMatch = shippingDetails.match(/=\s*\$?\s*(\d+(?:\.\d{1,2})?)/);
-  const deliveryMatch =
-    shippingDetails.match(/delivery(?: fee| amount)?:?\s*\$?\s*(\d+(?:\.\d{1,2})?)/i) ||
-    shippingDetails.match(/\$\s*(\d+(?:\.\d{1,2})?)/);
-  const value = Number(exactMatch?.[1] || deliveryMatch?.[1]);
-
-  return Number.isFinite(value) ? value : null;
-}
-
-function getSavedQuotePricingBreakdown(quote: SavedQuoteRecord | null) {
-  if (!quote) {
-    return { productTotal: 0, delivery: 0, tax: 0, total: 0 };
-  }
-
-  const productTotal = (quote.line_items || []).reduce(
-    (sum, line) => sum + Number(line.price || 0) * Number(line.quantity || 0),
-    0,
-  );
-  const total = Number(quote.quote_total_cents || 0) / 100;
-  const parsedDelivery = parseSavedDeliveryAmount(quote.shipping_details);
-
-  if (parsedDelivery !== null) {
-    const tax = Math.max(0, total - productTotal - parsedDelivery);
-    return { productTotal, delivery: parsedDelivery, tax, total };
-  }
-
-  const taxableSubtotal = total / (1 + SAVED_QUOTE_FALLBACK_TAX_RATE);
-  const delivery = Math.max(0, taxableSubtotal - productTotal);
-  const tax = Math.max(0, total - taxableSubtotal);
-
-  return { productTotal, delivery, tax, total };
-}
-
 type SavedQuoteRecord = {
   id: string;
   customer_name?: string | null;
+  company_name?: string | null;
   customer_email?: string | null;
   customer_phone?: string | null;
+  payment_terms_name?: string | null;
+  payment_terms_due_in_days?: number | null;
   address1?: string | null;
   address2?: string | null;
   city?: string | null;
@@ -93,6 +58,9 @@ type SavedQuoteRecord = {
   description?: string | null;
   eta?: string | null;
   summary?: string | null;
+  created_by_user_id?: string | null;
+  created_by_name?: string | null;
+  created_by_email?: string | null;
   source_breakdown?: Array<{
     vendor: string;
     quantity: number;
@@ -196,6 +164,12 @@ function buildPrintableQuoteHtml(actionData: any, logoUrl: string) {
     day: "numeric",
     year: "numeric",
   }).format(new Date());
+  const companyContactLines = [
+    "W185N7487 Narrow Lane",
+    "Menomonee Falls, WI 53051",
+    "(262) 345-4001",
+    "info@greenhillssupply.com",
+  ];
   const normalizedEta = String(deliveryQuote.eta || "")
     .trim()
     .replace(/[–—]/g, "-")
@@ -253,7 +227,15 @@ function buildPrintableQuoteHtml(actionData: any, logoUrl: string) {
       border-bottom: 6px solid #8fd400;
       background: linear-gradient(135deg, #f7fbef 0%, #ffffff 72%);
     }
+    .brand { width: 210px; text-align: center; }
     .logo { width: 180px; max-height: 110px; object-fit: contain; }
+    .company-contact {
+      margin-top: 8px;
+      color: #334155;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
     .title { flex: 1; text-align: right; }
     h1 { margin: 0; font-size: 34px; line-height: 1; letter-spacing: -0.03em; }
     .date { margin-top: 10px; color: #475569; font-size: 14px; font-weight: 700; }
@@ -332,7 +314,12 @@ function buildPrintableQuoteHtml(actionData: any, logoUrl: string) {
 <body>
   <main class="quote">
     <header class="header">
-      <img class="logo" src="${escapePrintHtml(logoUrl)}" alt="Green Hills Supply" />
+      <div class="brand">
+        <img class="logo" src="${escapePrintHtml(logoUrl)}" alt="Green Hills Supply" />
+        <div class="company-contact">
+          ${companyContactLines.map((line) => `<div>${escapePrintHtml(line)}</div>`).join("")}
+        </div>
+      </div>
       <div class="title">
         <h1>Quote</h1>
         <div class="date">${escapePrintHtml(quoteDate)}</div>
@@ -409,84 +396,71 @@ export async function loader({ request }: any) {
 
   if (url.searchParams.get("logout") === "1") {
     return redirect("/custom-quote", {
-      headers: {
-        "Set-Cookie": await adminQuoteCookie.serialize("", { maxAge: 0 }),
-      },
+      headers: [
+        ["Set-Cookie", await userAuthCookie.serialize("", { maxAge: 0 })],
+        ["Set-Cookie", await adminQuoteCookie.serialize("", { maxAge: 0 })],
+      ],
     });
   }
 
-  const allowed = await hasAdminQuoteAccess(request);
-  const products = allowed ? await getProductOptionsFromSupabase() : [];
-  const recentQuotes = allowed ? await getRecentCustomQuotes(15) : [];
+  const allowed = await hasAdminQuotePermissionAccess(request, "quoteTool");
+  if (!allowed) {
+    return redirect(`/login?next=${encodeURIComponent(url.pathname + url.search)}`);
+  }
+
+  const [products, recentQuotes, currentUser] = allowed
+    ? await Promise.all([
+        getProductOptionsFromSupabase(),
+        getRecentCustomQuotes(15),
+        getCurrentUser(request),
+      ])
+    : [[], [], null];
 
   return data({
     allowed,
+    currentUser,
     products,
+    b2bCompanies: await loadDispatchB2BCompanies(),
     recentQuotes,
     googleMapsApiKey: getBrowserGoogleMapsApiKey(),
   });
 }
 
 export async function action({ request }: any) {
+  const url = new URL(request.url);
   const form = await request.formData();
   const intent = String(form.get("intent") || "");
 
-  if (intent === "login") {
-    const password = String(form.get("password") || "");
-    const expected = getAdminQuotePassword();
-
-    if (!expected || password !== expected) {
-      return data(
-        {
-          allowed: false,
-          loginError: "Invalid password",
-          products: [],
-          recentQuotes: [],
-          googleMapsApiKey: getBrowserGoogleMapsApiKey(),
-        },
-        { status: 401 },
-      );
-    }
-
-    const products = await getProductOptionsFromSupabase();
-    const recentQuotes = await getRecentCustomQuotes(15);
-
-    return data(
-      {
-        allowed: true,
-        products,
-        recentQuotes,
-        googleMapsApiKey: getBrowserGoogleMapsApiKey(),
-      },
-      {
-        headers: {
-          "Set-Cookie": await adminQuoteCookie.serialize("ok"),
-        },
-      },
-    );
-  }
-
-  const allowed = await hasAdminQuoteAccess(request);
+  const allowed = await hasAdminQuotePermissionAccess(request, "quoteTool");
   if (!allowed) {
-    return data(
-      {
-        allowed: false,
-        loginError: "Please log in",
-        products: [],
-        recentQuotes: [],
-        googleMapsApiKey: getBrowserGoogleMapsApiKey(),
-      },
-      { status: 401 },
-    );
+    return redirect(`/login?next=${encodeURIComponent(url.pathname + url.search)}`);
   }
 
-  const products = await getProductOptionsFromSupabase();
-  const recentQuotes = await getRecentCustomQuotes(15);
+  const [products, recentQuotes] = await Promise.all([
+    getProductOptionsFromSupabase(),
+    getRecentCustomQuotes(15),
+  ]);
 
   const customerName = String(form.get("customerName") || "");
   const companyName = String(form.get("companyName") || "").trim();
+  const shopifyCompanyId = String(form.get("shopifyCompanyId") || "").trim();
+  const shopifyCompanyContactId = String(form.get("shopifyCompanyContactId") || "").trim();
+  const shopifyCompanyLocationId = String(form.get("shopifyCompanyLocationId") || "").trim();
+  const paymentTermsName = String(form.get("paymentTermsName") || "").trim();
+  const paymentTermsTemplateId = String(form.get("paymentTermsTemplateId") || "").trim();
+  const parsedPaymentTermsDueInDays = Number(String(form.get("paymentTermsDueInDays") || "").trim());
+  const paymentTermsDueInDays = Number.isFinite(parsedPaymentTermsDueInDays)
+    ? parsedPaymentTermsDueInDays
+    : null;
   const customerEmail = String(form.get("customerEmail") || "").trim();
   const customerPhone = String(form.get("customerPhone") || "").trim();
+  const taxExempt = String(form.get("taxExempt") || "") === "1";
+  const billingAddress1 = String(form.get("billingAddress1") || "");
+  const billingAddress2 = String(form.get("billingAddress2") || "");
+  const billingCity = String(form.get("billingCity") || "");
+  const billingProvince = String(form.get("billingProvince") || "");
+  const billingPostalCode = String(form.get("billingPostalCode") || "");
+  const billingCountry = String(form.get("billingCountry") || "US");
   const address1 = String(form.get("address1") || "");
   const address2 = String(form.get("address2") || "");
   const city = String(form.get("city") || "");
@@ -497,6 +471,7 @@ export async function action({ request }: any) {
   const contractorTier = normalizeContractorTier(form.get("contractorTier"));
   const pricingLabel = getPricingLabel(quoteAudience, contractorTier);
   const customDeliveryAmountInput = String(form.get("customDeliveryAmount") || "").trim();
+  const customRatePerMinuteInput = String(form.get("customRatePerMinute") || "").trim();
   const customTaxRateInput = String(form.get("customTaxRate") || "").trim();
   const customNotes = String(form.get("customNotes") || "").trim();
   const customShippingQuantityInput = String(form.get("customShippingQuantity") || "").trim();
@@ -505,6 +480,7 @@ export async function action({ request }: any) {
     : "miles";
   const customShippingRateInput = String(form.get("customShippingRate") || "").trim();
   const customDeliveryAmountValue = Number(customDeliveryAmountInput);
+  const customRatePerMinuteValue = Number(customRatePerMinuteInput);
   const customTaxRateValue = Number(customTaxRateInput);
   const customShippingQuantityValue = Number(customShippingQuantityInput);
   const customShippingRateValue = Number(customShippingRateInput);
@@ -514,38 +490,14 @@ export async function action({ request }: any) {
     customShippingRateInput !== "" &&
     Number.isFinite(customShippingQuantityValue) &&
     Number.isFinite(customShippingRateValue);
+  const customRatePerMinute =
+    quoteAudience === "custom" &&
+    customRatePerMinuteInput !== "" &&
+    Number.isFinite(customRatePerMinuteValue) &&
+    customRatePerMinuteValue > 0
+      ? customRatePerMinuteValue
+      : undefined;
   const rawLines = JSON.parse(String(form.get("linesJson") || "[]"));
-  const hasDecimalQuantity = rawLines.some((line: any) => {
-    const quantity = String(line?.quantity || "").trim();
-    return quantity !== "" && !/^\d+$/.test(quantity);
-  });
-
-  if (hasDecimalQuantity) {
-    return data(
-      {
-        allowed: true,
-        products,
-        recentQuotes,
-        ok: false,
-        message: WHOLE_NUMBER_ERROR,
-        customerName,
-        companyName,
-        customerEmail,
-        customerPhone,
-        address: { address1, address2, city, province, postalCode, country },
-        quoteAudience,
-        contractorTier,
-        customDeliveryAmount: customDeliveryAmountInput,
-        customTaxRate: customTaxRateInput,
-        customShippingQuantity: customShippingQuantityInput,
-        customShippingUnit,
-        customShippingRate: customShippingRateInput,
-        customNotes,
-        googleMapsApiKey: getBrowserGoogleMapsApiKey(),
-      },
-      { status: 400 },
-    );
-  }
 
   if (quoteAudience === "contractor" && !companyName) {
     return data(
@@ -559,10 +511,13 @@ export async function action({ request }: any) {
         companyName,
         customerEmail,
         customerPhone,
+        taxExempt,
+        billingAddress: { billingAddress1, billingAddress2, billingCity, billingProvince, billingPostalCode, billingCountry },
         address: { address1, address2, city, province, postalCode, country },
         quoteAudience,
         contractorTier,
         customDeliveryAmount: customDeliveryAmountInput,
+        customRatePerMinute: customRatePerMinuteInput,
         customTaxRate: customTaxRateInput,
         customShippingQuantity: customShippingQuantityInput,
         customShippingUnit,
@@ -626,10 +581,13 @@ export async function action({ request }: any) {
         companyName,
         customerEmail,
         customerPhone,
+        taxExempt,
+        billingAddress: { billingAddress1, billingAddress2, billingCity, billingProvince, billingPostalCode, billingCountry },
         address: { address1, address2, city, province, postalCode, country },
         quoteAudience,
         contractorTier,
         customDeliveryAmount: customDeliveryAmountInput,
+        customRatePerMinute: customRatePerMinuteInput,
         customTaxRate: customTaxRateInput,
         customShippingQuantity: customShippingQuantityInput,
         customShippingUnit,
@@ -653,10 +611,13 @@ export async function action({ request }: any) {
         companyName,
         customerEmail,
         customerPhone,
+        taxExempt,
+        billingAddress: { billingAddress1, billingAddress2, billingCity, billingProvince, billingPostalCode, billingCountry },
         address: { address1, address2, city, province, postalCode, country },
         quoteAudience,
         contractorTier,
         customDeliveryAmount: customDeliveryAmountInput,
+        customRatePerMinute: customRatePerMinuteInput,
         customTaxRate: customTaxRateInput,
         customShippingQuantity: customShippingQuantityInput,
         customShippingUnit,
@@ -678,6 +639,7 @@ export async function action({ request }: any) {
     city,
     address1,
     address2,
+    ratePerMinute: customRatePerMinute,
     items: selectedProducts.map((item) => ({
       sku: item.sku,
       quantity: item.quantity,
@@ -701,16 +663,17 @@ export async function action({ request }: any) {
           ? customDeliveryAmountValue
           : deliveryAmount)
       : deliveryAmount;
-  const taxableSubtotal = productsSubtotal + effectiveDeliveryAmount;
-
   const taxRate =
+    taxExempt
+      ? 0
+      :
     quoteAudience === "custom" && customTaxRateInput !== ""
       ? (Number.isFinite(customTaxRateValue)
           ? customTaxRateValue
-          : Number(process.env.QUOTE_TAX_RATE || "0"))
-      : Number(process.env.QUOTE_TAX_RATE || "0");
-  const taxAmount = taxableSubtotal * taxRate;
-  const totalAmount = taxableSubtotal + taxAmount;
+          : getConfiguredQuoteTaxRate())
+      : getConfiguredQuoteTaxRate();
+  const taxAmount = productsSubtotal * taxRate;
+  const totalAmount = productsSubtotal + effectiveDeliveryAmount + taxAmount;
   const effectiveServiceName = deliveryQuote.serviceName;
   const effectiveEta = deliveryQuote.eta;
   const effectiveSummary = deliveryQuote.summary;
@@ -729,11 +692,26 @@ export async function action({ request }: any) {
   let savedQuoteId: string | null = null;
 
   if (intent === "save") {
+    const currentUser = await getCurrentUser(request);
     const saved = await saveCustomQuote({
       shop,
       customerName,
+      companyName,
       customerEmail,
       customerPhone,
+      shopifyCompanyId,
+      shopifyCompanyContactId,
+      shopifyCompanyLocationId,
+      paymentTermsName,
+      paymentTermsTemplateId,
+      paymentTermsDueInDays,
+      taxExempt,
+      billingAddress1,
+      billingAddress2,
+      billingCity,
+      billingProvince,
+      billingPostalCode,
+      billingCountry,
       address1,
       address2,
       city,
@@ -746,6 +724,9 @@ export async function action({ request }: any) {
       description: `${effectiveDescription} Pricing: ${pricingLabel}.`,
       eta: effectiveEta,
       summary: undefined,
+      createdByUserId: currentUser?.id || null,
+      createdByName: currentUser?.name || currentUser?.email || "Legacy admin",
+      createdByEmail: currentUser?.email || null,
       sourceBreakdown,
       lineItems: selectedProducts.map((product) => ({
         ...product,
@@ -758,6 +739,21 @@ export async function action({ request }: any) {
     });
 
     savedQuoteId = saved.id;
+
+    await logAuditEvent({
+      actor: currentUser,
+      action: "create_quote",
+      targetType: "quote",
+      targetId: saved.id,
+      targetLabel: customerName || customerEmail || saved.id,
+      details: {
+        customerName,
+        customerEmail,
+        totalCents: Math.round(totalAmount * 100),
+        audience: quoteAudience,
+        contractorTier: quoteAudience === "contractor" ? contractorTier : null,
+      },
+    });
   }
 
   return data({
@@ -767,8 +763,16 @@ export async function action({ request }: any) {
     ok: true,
     customerName,
     companyName,
+    shopifyCompanyId,
+    shopifyCompanyContactId,
+    shopifyCompanyLocationId,
+    paymentTermsName,
+    paymentTermsTemplateId,
+    paymentTermsDueInDays,
     customerEmail,
     customerPhone,
+    taxExempt,
+    billingAddress: { billingAddress1, billingAddress2, billingCity, billingProvince, billingPostalCode, billingCountry },
     address: { address1, address2, city, province, postalCode, country },
     googleMapsApiKey: getBrowserGoogleMapsApiKey(),
     savedQuoteId,
@@ -793,6 +797,7 @@ export async function action({ request }: any) {
     quoteAudience,
     contractorTier,
     customDeliveryAmount: customDeliveryAmountInput,
+    customRatePerMinute: customRatePerMinuteInput,
     customTaxRate: customTaxRateInput,
     customShippingQuantity: customShippingQuantityInput,
     customShippingUnit,
@@ -959,6 +964,8 @@ export default function PublicCustomQuotePage() {
 
   const allowed = actionData?.allowed ?? loaderData.allowed;
   const products = actionData?.products ?? loaderData.products ?? [];
+  const b2bCompanies = (actionData?.b2bCompanies ?? loaderData.b2bCompanies ?? []) as DispatchB2BCompany[];
+  const currentUser = actionData?.currentUser ?? loaderData.currentUser ?? null;
   const recentQuotes = (actionData?.recentQuotes ??
     loaderData.recentQuotes ??
     []) as SavedQuoteRecord[];
@@ -966,6 +973,9 @@ export default function PublicCustomQuotePage() {
     actionData?.googleMapsApiKey ?? loaderData.googleMapsApiKey ?? "";
   const embeddedQs = location.search || "";
   const isEmbeddedRoute = location.pathname.startsWith("/app/");
+  const urlParams = new URLSearchParams(location.search);
+  const initialAudience = normalizeQuoteAudience(urlParams.get("audience"));
+  const initialTier = normalizeContractorTier(urlParams.get("tier"));
   const createDraftOrderAction = location.pathname.startsWith("/app/")
     ? `/app/api/create-draft-order${embeddedQs}`
     : `/api/create-draft-order${embeddedQs}`;
@@ -973,22 +983,53 @@ export default function PublicCustomQuotePage() {
     ? `/app/api/delete-quote${embeddedQs}`
     : `/api/delete-quote${embeddedQs}`;
   const quoteReviewHref = isEmbeddedRoute ? "/app/quote-review" : "/quote-review";
+  const dispatchHref = "/";
   const logoutHref = isEmbeddedRoute ? "/app/custom-quote?logout=1" : "/custom-quote?logout=1";
+  const mobileDashboardHref = "/driver";
+  const loginHref = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+  const canAccess = (permission: string) =>
+    !currentUser || currentUser.permissions?.includes(permission);
 
   const [googleStatus, setGoogleStatus] = useState("Not loaded");
   const [quoteAudience, setQuoteAudience] = useState<QuoteAudience>(
-    normalizeQuoteAudience(actionData?.quoteAudience),
+    normalizeQuoteAudience(actionData?.quoteAudience ?? initialAudience),
   );
   const [contractorTier, setContractorTier] = useState<ContractorTier>(
-    normalizeContractorTier(actionData?.contractorTier),
+    normalizeContractorTier(actionData?.contractorTier ?? initialTier),
   );
   const [companyName, setCompanyName] = useState(actionData?.companyName || "");
+  const [shopifyCompanyId, setShopifyCompanyId] = useState(actionData?.shopifyCompanyId || "");
+  const [shopifyCompanyContactId, setShopifyCompanyContactId] = useState(actionData?.shopifyCompanyContactId || "");
+  const [shopifyCompanyLocationId, setShopifyCompanyLocationId] = useState(actionData?.shopifyCompanyLocationId || "");
+  const [paymentTerms, setPaymentTerms] = useState({
+    name: actionData?.paymentTermsName || "",
+    templateId: actionData?.paymentTermsTemplateId || "",
+    dueInDays: actionData?.paymentTermsDueInDays ? String(actionData.paymentTermsDueInDays) : "",
+  });
+  const [customerName, setCustomerName] = useState(actionData?.customerName || "");
+  const [customerEmail, setCustomerEmail] = useState(actionData?.customerEmail || "");
+  const [customerPhone, setCustomerPhone] = useState(actionData?.customerPhone || "");
+  const [taxExempt, setTaxExempt] = useState(Boolean(actionData?.taxExempt));
+  const [billingAddress, setBillingAddress] = useState({
+    billingAddress1: actionData?.billingAddress?.billingAddress1 || "",
+    billingAddress2: actionData?.billingAddress?.billingAddress2 || "",
+    billingCity: actionData?.billingAddress?.billingCity || "",
+    billingProvince: actionData?.billingAddress?.billingProvince || "",
+    billingPostalCode: actionData?.billingAddress?.billingPostalCode || "",
+    billingCountry: actionData?.billingAddress?.billingCountry || "US",
+  });
   const [lines, setLines] = useState<QuoteLine[]>([
     { sku: "", quantity: "", search: "", customTitle: "", customPrice: "" },
   ]);
   const [selectedHistoryQuoteId, setSelectedHistoryQuoteId] = useState<string | null>(
     null,
   );
+  const [isMobile, setIsMobile] = useState(false);
+  const [historyDetailsOpen, setHistoryDetailsOpen] = useState({
+    customer: true,
+    lineItems: false,
+    sourceBreakdown: false,
+  });
   const deferredLines = useDeferredValue(lines);
   const productSearchIndex = useMemo(
     () =>
@@ -997,6 +1038,10 @@ export default function PublicCustomQuotePage() {
         haystack: `${product.title} ${product.sku} ${product.vendor}`.toLowerCase(),
       })),
     [products],
+  );
+  const b2bCompanyByName = useMemo(
+    () => new Map(b2bCompanies.map((company) => [company.companyName, company])),
+    [b2bCompanies],
   );
 
   useEffect(() => {
@@ -1024,12 +1069,96 @@ export default function PublicCustomQuotePage() {
   }, [allowed, googleMapsApiKey]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const media = window.matchMedia("(max-width: 820px)");
+    const updateViewport = () => setIsMobile(media.matches);
+
+    updateViewport();
+    media.addEventListener("change", updateViewport);
+
+    return () => media.removeEventListener("change", updateViewport);
+  }, []);
+
+  useEffect(() => {
     if (deleteQuoteFetcher.data?.ok && deleteQuoteFetcher.data?.deletedQuoteId) {
       setSelectedHistoryQuoteId((current) =>
         current === deleteQuoteFetcher.data.deletedQuoteId ? null : current,
       );
     }
   }, [deleteQuoteFetcher.data]);
+
+  useEffect(() => {
+    setQuoteAudience(normalizeQuoteAudience(actionData?.quoteAudience ?? initialAudience));
+    setContractorTier(normalizeContractorTier(actionData?.contractorTier ?? initialTier));
+    setCompanyName(actionData?.companyName || "");
+    setShopifyCompanyId(actionData?.shopifyCompanyId || "");
+    setShopifyCompanyContactId(actionData?.shopifyCompanyContactId || "");
+    setShopifyCompanyLocationId(actionData?.shopifyCompanyLocationId || "");
+    setPaymentTerms({
+      name: actionData?.paymentTermsName || "",
+      templateId: actionData?.paymentTermsTemplateId || "",
+      dueInDays: actionData?.paymentTermsDueInDays ? String(actionData.paymentTermsDueInDays) : "",
+    });
+    setCustomerName(actionData?.customerName || "");
+    setCustomerEmail(actionData?.customerEmail || "");
+    setCustomerPhone(actionData?.customerPhone || "");
+    setTaxExempt(Boolean(actionData?.taxExempt));
+    setBillingAddress({
+      billingAddress1: actionData?.billingAddress?.billingAddress1 || "",
+      billingAddress2: actionData?.billingAddress?.billingAddress2 || "",
+      billingCity: actionData?.billingAddress?.billingCity || "",
+      billingProvince: actionData?.billingAddress?.billingProvince || "",
+      billingPostalCode: actionData?.billingAddress?.billingPostalCode || "",
+      billingCountry: actionData?.billingAddress?.billingCountry || "US",
+    });
+  }, [
+    actionData?.quoteAudience,
+    actionData?.contractorTier,
+    actionData?.companyName,
+    actionData?.shopifyCompanyId,
+    actionData?.shopifyCompanyContactId,
+    actionData?.shopifyCompanyLocationId,
+    actionData?.paymentTermsName,
+    actionData?.paymentTermsTemplateId,
+    actionData?.paymentTermsDueInDays,
+    actionData?.customerName,
+    actionData?.customerEmail,
+    actionData?.customerPhone,
+    actionData?.taxExempt,
+    actionData?.billingAddress,
+    initialAudience,
+    initialTier,
+  ]);
+
+  function updateBillingAddress(patch: Partial<typeof billingAddress>) {
+    setBillingAddress((current) => ({ ...current, ...patch }));
+  }
+
+  function applyB2BCompany(company: DispatchB2BCompany) {
+    setCompanyName(company.companyName);
+    setShopifyCompanyId(company.shopifyCompanyId || "");
+    setShopifyCompanyContactId(company.shopifyCompanyContactId || "");
+    setShopifyCompanyLocationId(company.shopifyLocationId || "");
+    setPaymentTerms({
+      name: company.paymentTermsName || "",
+      templateId: company.paymentTermsTemplateId || "",
+      dueInDays: company.paymentTermsDueInDays ? String(company.paymentTermsDueInDays) : "",
+    });
+    setCustomerName(company.contactName || "");
+    setCustomerEmail(company.email || "");
+    setCustomerPhone(company.phone || "");
+    setTaxExempt(Boolean(company.taxExempt));
+    setBillingAddress({
+      billingAddress1: company.billingAddress1 || "",
+      billingAddress2: company.billingAddress2 || "",
+      billingCity: company.billingCity || "",
+      billingProvince: company.billingProvince || "WI",
+      billingPostalCode: company.billingPostalCode || "",
+      billingCountry: company.billingCountry || "US",
+    });
+    setContractorTier(company.contractorTier || "tier1");
+  }
 
   const quoteText = useMemo(() => {
     if (!actionData?.pricing || !actionData?.deliveryQuote) return "";
@@ -1063,15 +1192,70 @@ export default function PublicCustomQuotePage() {
       recentQuotes.find((quote) => quote.id === selectedHistoryQuoteId) || null,
     [recentQuotes, selectedHistoryQuoteId],
   );
-  const selectedHistoryPricing = useMemo(
-    () => getSavedQuotePricingBreakdown(selectedHistoryQuote),
-    [selectedHistoryQuote],
-  );
+  const mobileActionButtonStyle = {
+    ...styles.buttonGhost,
+    minHeight: isMobile ? 48 : undefined,
+    width: isMobile ? "100%" : undefined,
+    justifyContent: "center" as const,
+  };
+  const mobileTabLinkStyle = (active: boolean) =>
+    ({
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 4,
+      minHeight: 56,
+      borderRadius: 14,
+      textDecoration: "none",
+      color: active ? "#38bdf8" : "#94a3b8",
+      background: active ? "rgba(14, 165, 233, 0.12)" : "transparent",
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: "0.01em",
+    }) as const;
+  const mobileTabIconStyle = (active: boolean) =>
+    ({
+      width: 24,
+      height: 24,
+      borderRadius: 999,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: active ? "rgba(14, 165, 233, 0.18)" : "rgba(51, 65, 85, 0.35)",
+      color: active ? "#38bdf8" : "#cbd5e1",
+      fontSize: 12,
+      lineHeight: 1,
+    }) as const;
+  const mobileBottomNavStyle = {
+    position: "fixed" as const,
+    left: 12,
+    right: 12,
+    bottom: "calc(env(safe-area-inset-bottom, 0px) + 12px)",
+    zIndex: 30,
+    display: "grid",
+    gridTemplateColumns: "repeat(4, 1fr)",
+    gap: 10,
+    padding: "8px 10px",
+    borderRadius: 20,
+    background: "rgba(15, 23, 42, 0.96)",
+    border: "1px solid rgba(30, 41, 59, 0.95)",
+    boxShadow: "0 18px 38px rgba(2, 6, 23, 0.45)",
+    backdropFilter: "blur(14px)",
+  };
+
+  function toggleHistorySection(
+    key: keyof typeof historyDetailsOpen,
+  ) {
+    setHistoryDetailsOpen((current) => ({
+      ...current,
+      [key]: !current[key],
+    }));
+  }
 
   const historyQuoteText = useMemo(() => {
     if (!selectedHistoryQuote) return "";
 
-    const pricing = getSavedQuotePricingBreakdown(selectedHistoryQuote);
     const linesText =
       selectedHistoryQuote.line_items
         ?.map((line) => {
@@ -1085,14 +1269,13 @@ export default function PublicCustomQuotePage() {
       `Email: ${selectedHistoryQuote.customer_email || ""}`,
       `Phone: ${selectedHistoryQuote.customer_phone || ""}`,
       `Address: ${selectedHistoryQuote.address1 || ""}, ${selectedHistoryQuote.city || ""}, ${selectedHistoryQuote.province || ""} ${selectedHistoryQuote.postal_code || ""}`,
-      `Product Total: $${pricing.productTotal.toFixed(2)}`,
-      `Delivery: $${pricing.delivery.toFixed(2)}`,
-      `Tax: $${pricing.tax.toFixed(2)}`,
-      `Total: $${pricing.total.toFixed(2)}`,
+      `Total: $${(Number(selectedHistoryQuote.quote_total_cents || 0) / 100).toFixed(2)}`,
       `Service: ${selectedHistoryQuote.service_name || ""}`,
       selectedHistoryQuote.shipping_details
         ? `Shipping Details: ${selectedHistoryQuote.shipping_details}`
         : null,
+      `ETA: ${selectedHistoryQuote.eta || ""}`,
+      `Summary: ${selectedHistoryQuote.summary || ""}`,
       `Notes: ${selectedHistoryQuote.description || ""}`,
       "",
       linesText,
@@ -1105,28 +1288,6 @@ export default function PublicCustomQuotePage() {
     setLines((prev) =>
       prev.map((line, i) => (i === index ? { ...line, ...patch } : line)),
     );
-  }
-
-  function updateLineQuantity(index: number, value: string) {
-    if (!isWholeNumberInput(value)) {
-      alert(WHOLE_NUMBER_ERROR);
-      return;
-    }
-
-    updateLine(index, { quantity: value });
-  }
-
-  function handleQuoteSubmit(event: FormEvent<HTMLFormElement>) {
-    if (quoteAudience === "contractor" && !companyName.trim()) {
-      event.preventDefault();
-      alert("Company Name is required for contractor quotes.");
-      return;
-    }
-
-    if (lines.some((line) => !isWholeNumberInput(line.quantity))) {
-      event.preventDefault();
-      alert(WHOLE_NUMBER_ERROR);
-    }
   }
 
   function addLine() {
@@ -1150,6 +1311,13 @@ export default function PublicCustomQuotePage() {
       .slice(0, 12);
   }
 
+  function handleQuoteSubmit(event: FormEvent<HTMLFormElement>) {
+    if (quoteAudience === "contractor" && !companyName.trim()) {
+      event.preventDefault();
+      alert("Company Name is required for contractor quotes.");
+    }
+  }
+
   async function copyQuote() {
     if (!quoteText) return;
     await navigator.clipboard.writeText(quoteText);
@@ -1169,15 +1337,15 @@ export default function PublicCustomQuotePage() {
     popup.document.write(
       buildPrintableQuoteHtml(
         actionData,
-        `${window.location.origin}/green-hills-logo.png`,
+        `${window.location.origin}/email-green-hills-logo.png`,
       ),
     );
     popup.document.close();
 
-    setTimeout(() => {
+    popup.addEventListener("load", () => {
       popup.focus();
       popup.print();
-    }, 400);
+    });
   }
 
   async function copyHistoryQuote() {
@@ -1193,35 +1361,23 @@ export default function PublicCustomQuotePage() {
           <div style={styles.card}>
             <h1 style={styles.title}>Custom Quote Portal</h1>
             <p style={styles.subtitle}>
-              Enter the admin password to access the quote tool.
+              Sign in with your contractor user account to access the quote tool.
             </p>
-
-            <Form method="post" autoComplete="off" style={{ marginTop: "22px" }}>
-              <input type="hidden" name="intent" value="login" />
-
-              <label style={styles.label}>Admin Password</label>
-              <input
-                type="password"
-                name="password"
-                autoComplete="current-password"
-                style={styles.input}
-              />
-
-              {actionData?.loginError ? (
-                <div style={styles.statusErr}>{actionData.loginError}</div>
-              ) : null}
-
-              <button
-                type="submit"
-                style={{
-                  ...styles.buttonPrimary,
-                  marginTop: "18px",
-                  width: "100%",
-                }}
-              >
-                Unlock Quote Tool
-              </button>
-            </Form>
+            <a
+              href={loginHref}
+              style={{
+                ...styles.buttonPrimary,
+                marginTop: "18px",
+                width: "100%",
+                minHeight: 48,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                textDecoration: "none",
+              }}
+            >
+              Sign In
+            </a>
           </div>
         </div>
       </div>
@@ -1229,36 +1385,88 @@ export default function PublicCustomQuotePage() {
   }
 
   return (
-    <div style={styles.page}>
+    <div
+      style={{
+        ...styles.page,
+        padding: isMobile ? "20px 14px 120px" : styles.page.padding,
+        overflowX: "clip",
+      }}
+    >
       <div style={styles.shell}>
-        <div style={styles.hero}>
-          <div>
-            <h1 style={styles.title}>Custom Quote Tool</h1>
+        {isMobile ? (
+          <div style={{ marginBottom: 18 }}>
+            <h1 style={{ ...styles.title, fontSize: "28px" }}>Custom Quote Tool</h1>
             <div style={styles.subtitle}>
-              Full quote builder with products, delivery, tax, images, and saved
-              history.
+              Full quote builder with products, delivery, tax, images, and saved history.
             </div>
             <div style={{ marginTop: 8, color: "#64748b", fontSize: 13 }}>
               Loaded products: {products.length} · Google Places: {googleStatus}
             </div>
           </div>
+        ) : (
+          <div style={styles.hero}>
+            <div>
+              <h1 style={styles.title}>Custom Quote Tool</h1>
+              <div style={styles.subtitle}>
+                Full quote builder with products, delivery, tax, images, and saved
+                history.
+              </div>
+              <div style={{ marginTop: 8, color: "#64748b", fontSize: 13 }}>
+                Loaded products: {products.length} · Google Places: {googleStatus}
+              </div>
+            </div>
 
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <a href={quoteReviewHref} style={styles.logout}>
-              Review Quotes
-            </a>
-            <a href={logoutHref} style={styles.logout}>
-              Log out
-            </a>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              {canAccess("quoteTool") ? (
+                <a href={mobileDashboardHref} style={styles.logout}>
+                  Dashboard
+                </a>
+              ) : null}
+              {canAccess("dispatch") ? (
+                <a href={dispatchHref} style={styles.logout}>
+                  Dispatch
+                </a>
+              ) : null}
+              {canAccess("reviewQuotes") ? (
+                <a href={quoteReviewHref} style={styles.logout}>
+                  Review Quotes
+                </a>
+              ) : null}
+              {canAccess("manageUsers") ? (
+                <a href="/settings" style={styles.logout}>
+                  Settings
+                </a>
+              ) : null}
+              {currentUser ? (
+                <a href="/change-password" style={styles.logout}>
+                  Change Password
+                </a>
+              ) : null}
+              <a href={currentUser ? "/login?logout=1" : logoutHref} style={styles.logout}>
+                Log out
+              </a>
+            </div>
           </div>
-        </div>
+        )}
 
         <Form method="post" style={{ display: "grid", gap: "22px" }} onSubmit={handleQuoteSubmit}>
           <input type="hidden" name="quoteAudience" value={quoteAudience} />
           <input type="hidden" name="contractorTier" value={contractorTier} />
           <input type="hidden" name="linesJson" value={JSON.stringify(lines)} />
+          <input type="hidden" name="taxExempt" value={taxExempt ? "1" : "0"} />
+          <input type="hidden" name="shopifyCompanyId" value={shopifyCompanyId} />
+          <input type="hidden" name="shopifyCompanyContactId" value={shopifyCompanyContactId} />
+          <input type="hidden" name="shopifyCompanyLocationId" value={shopifyCompanyLocationId} />
+          <input type="hidden" name="paymentTermsName" value={paymentTerms.name} />
+          <input type="hidden" name="paymentTermsTemplateId" value={paymentTerms.templateId} />
+          <input type="hidden" name="paymentTermsDueInDays" value={paymentTerms.dueInDays} />
+          <datalist id="custom-quote-b2b-companies">
+            {b2bCompanies.map((company) => (
+              <option key={company.id} value={company.companyName} />
+            ))}
+          </datalist>
 
-          <div style={styles.card}>
+          <div style={{ ...styles.card, padding: isMobile ? "18px" : styles.card.padding }}>
             <h2 style={styles.sectionTitle}>Quote Type</h2>
             <p style={styles.sectionSub}>
               Switch between standard customer pricing and contractor tier pricing.
@@ -1270,6 +1478,9 @@ export default function PublicCustomQuotePage() {
                 onClick={() => setQuoteAudience("customer")}
                 style={{
                   ...styles.tabButton,
+                  minHeight: isMobile ? 46 : undefined,
+                  flex: isMobile ? "1 1 110px" : undefined,
+                  textAlign: "center",
                   ...(quoteAudience === "customer" ? styles.tabButtonActive : {}),
                 }}
               >
@@ -1280,6 +1491,9 @@ export default function PublicCustomQuotePage() {
                 onClick={() => setQuoteAudience("contractor")}
                 style={{
                   ...styles.tabButton,
+                  minHeight: isMobile ? 46 : undefined,
+                  flex: isMobile ? "1 1 110px" : undefined,
+                  textAlign: "center",
                   ...(quoteAudience === "contractor" ? styles.tabButtonActive : {}),
                 }}
               >
@@ -1290,6 +1504,9 @@ export default function PublicCustomQuotePage() {
                 onClick={() => setQuoteAudience("custom")}
                 style={{
                   ...styles.tabButton,
+                  minHeight: isMobile ? 46 : undefined,
+                  flex: isMobile ? "1 1 110px" : undefined,
+                  textAlign: "center",
                   ...(quoteAudience === "custom" ? styles.tabButtonActive : {}),
                 }}
               >
@@ -1298,19 +1515,58 @@ export default function PublicCustomQuotePage() {
             </div>
 
             {quoteAudience === "contractor" ? (
-              <div style={{ maxWidth: 280 }}>
-                <label style={styles.label}>Contractor Tier</label>
-                <select
-                  name="contractorTierUi"
-                  value={contractorTier}
-                  onChange={(e) =>
-                    setContractorTier(normalizeContractorTier(e.target.value))
-                  }
-                  style={styles.input}
-                >
-                  <option value="tier1">Tier 1</option>
-                  <option value="tier2">Tier 2</option>
-                </select>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: isMobile ? "1fr" : "minmax(280px, 1fr) 280px",
+                  gap: 14,
+                  alignItems: "end",
+                }}
+              >
+                <div>
+                  <label style={styles.label}>Company Name</label>
+                  <input
+                    type="text"
+                    name="companyName"
+                    list="custom-quote-b2b-companies"
+                    autoComplete="organization"
+                    required
+                    value={companyName}
+                    onChange={(event) => {
+                      const nextName = event.target.value;
+                      setCompanyName(nextName);
+                      const company = b2bCompanyByName.get(nextName);
+                      if (company) applyB2BCompany(company);
+                    }}
+                    placeholder="Search Shopify B2B company"
+                    style={styles.input}
+                  />
+                  {taxExempt ? (
+                    <div style={{ marginTop: 8, color: "#86efac", fontSize: 13 }}>
+                      Tax exempt company selected. Product tax will not be added.
+                    </div>
+                  ) : null}
+                  {paymentTerms.templateId ? (
+                    <div style={{ marginTop: 8, color: "#bfdbfe", fontSize: 13 }}>
+                      Payment terms: {paymentTerms.name || "Pay later"}
+                      {paymentTerms.dueInDays ? ` (${paymentTerms.dueInDays} days)` : ""}
+                    </div>
+                  ) : null}
+                </div>
+                <div>
+                  <label style={styles.label}>Contractor Tier</label>
+                  <select
+                    name="contractorTierUi"
+                    value={contractorTier}
+                    onChange={(e) =>
+                      setContractorTier(normalizeContractorTier(e.target.value))
+                    }
+                    style={styles.input}
+                  >
+                    <option value="tier1">Tier 1</option>
+                    <option value="tier2">Tier 2</option>
+                  </select>
+                </div>
               </div>
             ) : quoteAudience === "custom" ? (
               <div style={{ color: "#93c5fd", fontSize: 14 }}>
@@ -1320,7 +1576,7 @@ export default function PublicCustomQuotePage() {
             ) : null}
           </div>
 
-          <div style={styles.card}>
+          <div style={{ ...styles.card, padding: isMobile ? "18px" : styles.card.padding }}>
             <h2 style={styles.sectionTitle}>Customer & Delivery Address</h2>
             <p style={styles.sectionSub}>
               Start typing the street address and choose a suggestion.
@@ -1333,25 +1589,13 @@ export default function PublicCustomQuotePage() {
                   type="text"
                   name="customerName"
                   autoComplete="name"
-                  defaultValue={actionData?.customerName || ""}
+                  value={customerName}
+                  onChange={(event) => setCustomerName(event.target.value)}
                   style={styles.input}
                 />
               </div>
 
-              {quoteAudience === "contractor" ? (
-                <div>
-                  <label style={styles.label}>Company Name</label>
-                  <input
-                    type="text"
-                    name="companyName"
-                    autoComplete="organization"
-                    required
-                    value={companyName}
-                    onChange={(event) => setCompanyName(event.target.value)}
-                    style={styles.input}
-                  />
-                </div>
-              ) : (
+              {quoteAudience === "contractor" ? null : (
                 <input type="hidden" name="companyName" value={companyName} />
               )}
 
@@ -1361,7 +1605,8 @@ export default function PublicCustomQuotePage() {
                   type="email"
                   name="customerEmail"
                   autoComplete="email"
-                  defaultValue={actionData?.customerEmail || ""}
+                  value={customerEmail}
+                  onChange={(event) => setCustomerEmail(event.target.value)}
                   style={styles.input}
                 />
               </div>
@@ -1372,10 +1617,85 @@ export default function PublicCustomQuotePage() {
                   type="tel"
                   name="customerPhone"
                   autoComplete="tel"
-                  defaultValue={actionData?.customerPhone || ""}
+                  value={customerPhone}
+                  onChange={(event) => setCustomerPhone(event.target.value)}
                   style={styles.input}
                 />
               </div>
+
+              {quoteAudience === "contractor" ? (
+                <div style={{ display: "grid", gap: "14px" }}>
+                  <h3 style={{ ...styles.sectionTitle, fontSize: 18, marginTop: 4 }}>Billing Address</h3>
+                  <div>
+                    <label style={styles.label}>Billing Address 1</label>
+                    <input
+                      type="text"
+                      name="billingAddress1"
+                      value={billingAddress.billingAddress1}
+                      onChange={(event) => updateBillingAddress({ billingAddress1: event.target.value })}
+                      style={styles.input}
+                    />
+                  </div>
+                  <div>
+                    <label style={styles.label}>Billing Address 2</label>
+                    <input
+                      type="text"
+                      name="billingAddress2"
+                      value={billingAddress.billingAddress2}
+                      onChange={(event) => updateBillingAddress({ billingAddress2: event.target.value })}
+                      style={styles.input}
+                    />
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "1.3fr 0.8fr 0.8fr 0.8fr",
+                      gap: "14px",
+                    }}
+                  >
+                    <div>
+                      <label style={styles.label}>Billing City</label>
+                      <input
+                        type="text"
+                        name="billingCity"
+                        value={billingAddress.billingCity}
+                        onChange={(event) => updateBillingAddress({ billingCity: event.target.value })}
+                        style={styles.input}
+                      />
+                    </div>
+                    <div>
+                      <label style={styles.label}>State</label>
+                      <input
+                        type="text"
+                        name="billingProvince"
+                        value={billingAddress.billingProvince}
+                        onChange={(event) => updateBillingAddress({ billingProvince: event.target.value })}
+                        style={styles.input}
+                      />
+                    </div>
+                    <div>
+                      <label style={styles.label}>ZIP</label>
+                      <input
+                        type="text"
+                        name="billingPostalCode"
+                        value={billingAddress.billingPostalCode}
+                        onChange={(event) => updateBillingAddress({ billingPostalCode: event.target.value })}
+                        style={styles.input}
+                      />
+                    </div>
+                    <div>
+                      <label style={styles.label}>Country</label>
+                      <input
+                        type="text"
+                        name="billingCountry"
+                        value={billingAddress.billingCountry}
+                        onChange={(event) => updateBillingAddress({ billingCountry: event.target.value })}
+                        style={styles.input}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               <div>
                 <label style={styles.label}>Address 1</label>
@@ -1403,7 +1723,9 @@ export default function PublicCustomQuotePage() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1.3fr 0.8fr 0.8fr 0.8fr",
+                  gridTemplateColumns: isMobile
+                    ? "repeat(2, minmax(0, 1fr))"
+                    : "1.3fr 0.8fr 0.8fr 0.8fr",
                   gap: "14px",
                 }}
               >
@@ -1458,14 +1780,15 @@ export default function PublicCustomQuotePage() {
             </div>
           </div>
 
-          <div style={styles.card}>
+          <div style={{ ...styles.card, padding: isMobile ? "18px" : styles.card.padding }}>
             <div
               style={{
                 display: "flex",
                 justifyContent: "space-between",
-                alignItems: "center",
+                alignItems: isMobile ? "flex-start" : "center",
                 gap: "16px",
                 marginBottom: "14px",
+                flexWrap: "wrap",
               }}
             >
               <div>
@@ -1494,15 +1817,18 @@ export default function PublicCustomQuotePage() {
                       border: "1px solid #1f2937",
                       background: "rgba(2, 6, 23, 0.72)",
                       borderRadius: "16px",
-                      padding: "16px",
+                      padding: isMobile ? "14px" : "16px",
                       display: "grid",
                       gap: "12px",
+                      overflowX: "clip",
                     }}
                   >
                     <div
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "minmax(360px, 1fr) 160px 120px",
+                        gridTemplateColumns: isMobile
+                          ? "minmax(0, 1fr)"
+                          : "minmax(360px, 1fr) 160px 120px",
                         gap: "12px",
                         alignItems: "end",
                       }}
@@ -1529,10 +1855,10 @@ export default function PublicCustomQuotePage() {
                           type="number"
                           min="0"
                           step="1"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
                           value={line.quantity}
-                          onChange={(e) => updateLineQuantity(index, e.target.value)}
+                          onChange={(e) =>
+                            updateLine(index, { quantity: e.target.value })
+                          }
                           style={styles.input}
                         />
                       </div>
@@ -1541,7 +1867,11 @@ export default function PublicCustomQuotePage() {
                         type="button"
                         onClick={() => removeLine(index)}
                         disabled={lines.length === 1}
-                        style={styles.buttonGhost}
+                        style={{
+                          ...styles.buttonGhost,
+                          minHeight: isMobile ? 46 : undefined,
+                          width: isMobile ? "100%" : undefined,
+                        }}
                       >
                         Remove
                       </button>
@@ -1549,11 +1879,12 @@ export default function PublicCustomQuotePage() {
 
                     {selectedProduct ? (
                       <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 12,
-                          padding: "12px 14px",
+                      style={{
+                        display: "flex",
+                        alignItems: isMobile ? "flex-start" : "center",
+                        flexWrap: isMobile ? "wrap" : "nowrap",
+                        gap: 12,
+                        padding: "12px 14px",
                           borderRadius: "12px",
                           background: "rgba(37, 99, 235, 0.12)",
                           border: "1px solid rgba(96, 165, 250, 0.35)",
@@ -1620,11 +1951,13 @@ export default function PublicCustomQuotePage() {
 
                     {selectedProduct && quoteAudience === "custom" ? (
                       <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "minmax(260px, 1fr) 180px",
-                          gap: "12px",
-                        }}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: isMobile
+                          ? "minmax(0, 1fr)"
+                          : "minmax(260px, 1fr) 180px",
+                        gap: "12px",
+                      }}
                       >
                         <div>
                           <label style={styles.label}>Custom Line Title</label>
@@ -1770,10 +2103,10 @@ export default function PublicCustomQuotePage() {
           </div>
 
           {quoteAudience === "custom" ? (
-            <div style={styles.card}>
+            <div style={{ ...styles.card, padding: isMobile ? "18px" : styles.card.padding }}>
               <h2 style={styles.sectionTitle}>Custom Adjustments</h2>
               <p style={styles.sectionSub}>
-                Override delivery, tax, and the customer-facing quote details before
+                Override delivery, minute charge, tax, and the customer-facing quote details before
                 calculating or saving.
               </p>
 
@@ -1781,7 +2114,9 @@ export default function PublicCustomQuotePage() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "180px 180px",
+                    gridTemplateColumns: isMobile
+                      ? "minmax(0, 1fr)"
+                      : "180px 180px 180px",
                     gap: "14px",
                   }}
                 >
@@ -1794,6 +2129,19 @@ export default function PublicCustomQuotePage() {
                       step="0.01"
                       defaultValue={actionData?.customDeliveryAmount || ""}
                       placeholder="Use calculated delivery"
+                      style={styles.input}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={styles.label}>Minute Charge</label>
+                    <input
+                      type="number"
+                      name="customRatePerMinute"
+                      min="0"
+                      step="0.01"
+                      defaultValue={actionData?.customRatePerMinute || ""}
+                      placeholder="Default 2.08"
                       style={styles.input}
                     />
                   </div>
@@ -1815,7 +2163,9 @@ export default function PublicCustomQuotePage() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "160px 160px 180px",
+                    gridTemplateColumns: isMobile
+                      ? "minmax(0, 1fr)"
+                      : "160px 160px 180px",
                     gap: "14px",
                   }}
                 >
@@ -1881,12 +2231,32 @@ export default function PublicCustomQuotePage() {
             </div>
           ) : null}
 
-          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: "12px",
+              flexWrap: "wrap",
+              flexDirection: isMobile ? "column" : "row",
+              position: isMobile ? "sticky" : "static",
+              bottom: isMobile ? "calc(env(safe-area-inset-bottom, 0px) + 76px)" : undefined,
+              zIndex: isMobile ? 20 : undefined,
+              padding: isMobile ? "12px" : 0,
+              borderRadius: isMobile ? 16 : undefined,
+              background: isMobile ? "rgba(2, 6, 23, 0.92)" : "transparent",
+              border: isMobile ? "1px solid rgba(51, 65, 85, 0.9)" : "none",
+              boxShadow: isMobile ? "0 18px 32px rgba(2, 6, 23, 0.4)" : "none",
+              backdropFilter: isMobile ? "blur(12px)" : "none",
+            }}
+          >
             <button
               type="submit"
               name="intent"
               value="quote"
-              style={styles.buttonPrimary}
+              style={{
+                ...styles.buttonPrimary,
+                width: isMobile ? "100%" : undefined,
+                minHeight: isMobile ? 50 : undefined,
+              }}
             >
               {isSubmitting ? "Calculating..." : "Get Full Quote"}
             </button>
@@ -1895,7 +2265,11 @@ export default function PublicCustomQuotePage() {
               type="submit"
               name="intent"
               value="save"
-              style={styles.buttonSecondary}
+              style={{
+                ...styles.buttonSecondary,
+                width: isMobile ? "100%" : undefined,
+                minHeight: isMobile ? 50 : undefined,
+              }}
             >
               {isSubmitting ? "Saving..." : "Save Quote"}
             </button>
@@ -1903,13 +2277,25 @@ export default function PublicCustomQuotePage() {
         </Form>
 
         {actionData?.message ? (
-          <div style={actionData.ok ? styles.statusOk : styles.statusErr}>
+          <div
+            style={{
+              ...(actionData.ok ? styles.statusOk : styles.statusErr),
+              fontSize: isMobile ? 16 : undefined,
+              fontWeight: isMobile ? 700 : undefined,
+            }}
+          >
             {actionData.message}
           </div>
         ) : null}
 
         {actionData?.savedQuoteId ? (
-          <div style={styles.statusOk}>
+          <div
+            style={{
+              ...styles.statusOk,
+              fontSize: isMobile ? 16 : undefined,
+              fontWeight: isMobile ? 700 : undefined,
+            }}
+          >
             Quote saved successfully. ID: {actionData.savedQuoteId}
           </div>
         ) : null}
@@ -1919,16 +2305,17 @@ export default function PublicCustomQuotePage() {
             style={{
               marginTop: "24px",
               display: "grid",
-              gridTemplateColumns: "1.2fr 1fr",
+              gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "1.2fr 1fr",
               gap: "20px",
             }}
           >
-            <div style={styles.card}>
+            <div style={{ ...styles.card, padding: isMobile ? "18px" : styles.card.padding }}>
               <div
                 style={{
                   display: "flex",
                   justifyContent: "space-between",
-                  alignItems: "center",
+                  alignItems: isMobile ? "flex-start" : "center",
+                  flexWrap: "wrap",
                   gap: "12px",
                   marginBottom: "16px",
                 }}
@@ -1976,7 +2363,7 @@ export default function PublicCustomQuotePage() {
                     marginTop: 8,
                     paddingTop: 10,
                     borderTop: "1px solid #334155",
-                    fontSize: 18,
+                    fontSize: isMobile ? 22 : 18,
                     fontWeight: 800,
                   }}
                 >
@@ -2000,7 +2387,7 @@ export default function PublicCustomQuotePage() {
               </div>
             </div>
 
-            <div style={styles.card}>
+            <div style={{ ...styles.card, padding: isMobile ? "18px" : styles.card.padding }}>
               <h2 style={styles.sectionTitle}>Source Breakdown</h2>
               <div style={{ display: "grid", gap: "12px" }}>
                 {actionData.sourceBreakdown?.map((source: any, index: number) => (
@@ -2036,7 +2423,13 @@ export default function PublicCustomQuotePage() {
         ) : null}
 
         {recentQuotes.length ? (
-          <div style={{ ...styles.card, marginTop: 24 }}>
+          <div
+            style={{
+              ...styles.card,
+              marginTop: 24,
+              padding: isMobile ? "18px" : styles.card.padding,
+            }}
+          >
             <h2 style={styles.sectionTitle}>Recent Quotes</h2>
             <div style={{ display: "grid", gap: 12 }}>
               {recentQuotes.map((quote: any) => (
@@ -2049,10 +2442,12 @@ export default function PublicCustomQuotePage() {
                     width: "100%",
                     border: "1px solid #1f2937",
                     borderRadius: 12,
-                    padding: 14,
+                    padding: isMobile ? 16 : 14,
                     background: "rgba(2, 6, 23, 0.72)",
                     color: "#f8fafc",
                     cursor: "pointer",
+                    overflowWrap: "anywhere",
+                    minHeight: isMobile ? 88 : undefined,
                   }}
                 >
                   <div style={{ fontWeight: 700 }}>
@@ -2076,12 +2471,19 @@ export default function PublicCustomQuotePage() {
         ) : null}
 
         {selectedHistoryQuote ? (
-          <div style={{ ...styles.card, marginTop: 24 }}>
+          <div
+            style={{
+              ...styles.card,
+              marginTop: 24,
+              padding: isMobile ? "18px" : styles.card.padding,
+            }}
+          >
             <div
               style={{
                 display: "flex",
                 justifyContent: "space-between",
-                alignItems: "center",
+                alignItems: isMobile ? "flex-start" : "center",
+                flexWrap: "wrap",
                 gap: "12px",
                 marginBottom: "16px",
               }}
@@ -2091,12 +2493,18 @@ export default function PublicCustomQuotePage() {
                 <div style={{ color: "#64748b", fontSize: 13, marginTop: 6 }}>
                   {new Date(selectedHistoryQuote.created_at).toLocaleString()}
                 </div>
+                <div style={{ color: "#93c5fd", fontSize: 13, marginTop: 6 }}>
+                  Created by{" "}
+                  {selectedHistoryQuote.created_by_name ||
+                    selectedHistoryQuote.created_by_email ||
+                    "Unknown user"}
+                </div>
               </div>
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                 <button
                   type="button"
                   onClick={copyHistoryQuote}
-                  style={styles.buttonGhost}
+                  style={mobileActionButtonStyle}
                 >
                   Copy Saved Quote
                 </button>
@@ -2110,7 +2518,7 @@ export default function PublicCustomQuotePage() {
                   }}
                 >
                   <input type="hidden" name="quoteId" value={selectedHistoryQuote.id} />
-                  <button type="submit" style={styles.buttonGhost}>
+                  <button type="submit" style={mobileActionButtonStyle}>
                     {deleteQuoteFetcher.state === "submitting"
                       ? "Deleting..."
                       : "Delete Quote"}
@@ -2119,178 +2527,237 @@ export default function PublicCustomQuotePage() {
               </div>
             </div>
 
-            <draftOrderFetcher.Form
-              method="post"
-              action={createDraftOrderAction}
-              style={{ marginBottom: 16, display: "flex", gap: 12, flexWrap: "wrap" }}
-            >
-              <input type="hidden" name="quoteId" value={selectedHistoryQuote.id} />
-              <button type="submit" style={styles.buttonPrimary}>
-                {draftOrderFetcher.state === "submitting"
-                  ? "Creating Draft Order..."
-                  : "Send To Shopify"}
-              </button>
-              {draftOrderFetcher.data?.draftOrderAdminUrl ? (
-                <a
-                  href={draftOrderFetcher.data.draftOrderAdminUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={styles.buttonGhost}
-                >
-                  Open Draft Order
-                </a>
-              ) : null}
-              {draftOrderFetcher.data?.draftOrderInvoiceUrl ? (
-                <a
-                  href={draftOrderFetcher.data.draftOrderInvoiceUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={styles.buttonGhost}
-                >
-                  Open Invoice
-                </a>
-              ) : null}
-            </draftOrderFetcher.Form>
-
-            {draftOrderFetcher.data?.message ? (
-              <div
-                style={draftOrderFetcher.data.ok ? styles.statusOk : styles.statusErr}
+            {canAccess("sendToShopify") ? (
+              <draftOrderFetcher.Form
+                method="post"
+                action={createDraftOrderAction}
+                style={{ marginBottom: 16, display: "flex", gap: 12, flexWrap: "wrap" }}
               >
-                {draftOrderFetcher.data.message}
-              </div>
+                <input type="hidden" name="quoteId" value={selectedHistoryQuote.id} />
+                <button type="submit" style={styles.buttonPrimary}>
+                  {draftOrderFetcher.state === "submitting"
+                    ? "Creating Draft Order..."
+                    : "Send To Shopify"}
+                </button>
+                {draftOrderFetcher.data?.draftOrderAdminUrl ? (
+                  <a
+                    href={draftOrderFetcher.data.draftOrderAdminUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={mobileActionButtonStyle}
+                  >
+                    Open Draft Order
+                  </a>
+                ) : null}
+                {draftOrderFetcher.data?.draftOrderInvoiceUrl ? (
+                  <a
+                    href={draftOrderFetcher.data.draftOrderInvoiceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={mobileActionButtonStyle}
+                  >
+                    Open Invoice
+                  </a>
+                ) : null}
+              </draftOrderFetcher.Form>
             ) : null}
 
-            {deleteQuoteFetcher.data?.message ? (
-              <div
-                style={deleteQuoteFetcher.data.ok ? styles.statusOk : styles.statusErr}
-              >
-                {deleteQuoteFetcher.data.message}
-              </div>
-            ) : null}
+                {draftOrderFetcher.data?.message ? (
+                  <div
+                    style={{
+                      ...(draftOrderFetcher.data.ok ? styles.statusOk : styles.statusErr),
+                      fontSize: isMobile ? 16 : undefined,
+                      fontWeight: isMobile ? 700 : undefined,
+                    }}
+                  >
+                    {draftOrderFetcher.data.message}
+                  </div>
+                ) : null}
+
+                {deleteQuoteFetcher.data?.message ? (
+                  <div
+                    style={{
+                      ...(deleteQuoteFetcher.data.ok ? styles.statusOk : styles.statusErr),
+                      fontSize: isMobile ? 16 : undefined,
+                      fontWeight: isMobile ? 700 : undefined,
+                    }}
+                  >
+                    {deleteQuoteFetcher.data.message}
+                  </div>
+                ) : null}
 
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1.2fr 1fr",
+                gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "1.2fr 1fr",
                 gap: "20px",
               }}
             >
               <div style={{ display: "grid", gap: "10px", color: "#e5e7eb" }}>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Customer:</strong>{" "}
-                  {selectedHistoryQuote.customer_name || "Unnamed customer"}
-                </div>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Email:</strong>{" "}
-                  {selectedHistoryQuote.customer_email || "N/A"}
-                </div>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Phone:</strong>{" "}
-                  {selectedHistoryQuote.customer_phone || "N/A"}
-                </div>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Address:</strong>{" "}
-                  {selectedHistoryQuote.address1}, {selectedHistoryQuote.city},{" "}
-                  {selectedHistoryQuote.province} {selectedHistoryQuote.postal_code}
-                </div>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Product Total:</strong> $
-                  {selectedHistoryPricing.productTotal.toFixed(2)}
-                </div>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Delivery:</strong> $
-                  {selectedHistoryPricing.delivery.toFixed(2)}
-                </div>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Tax:</strong> $
-                  {selectedHistoryPricing.tax.toFixed(2)}
-                </div>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Total:</strong> $
-                  {selectedHistoryPricing.total.toFixed(2)}
-                </div>
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Service:</strong>{" "}
-                  {selectedHistoryQuote.service_name || "Quote"}
-                </div>
-                {selectedHistoryQuote.shipping_details ? (
-                  <div>
-                    <strong style={{ color: "#93c5fd" }}>Shipping Details:</strong>{" "}
-                    {selectedHistoryQuote.shipping_details}
+                <button
+                  type="button"
+                  onClick={() => toggleHistorySection("customer")}
+                  style={mobileActionButtonStyle}
+                >
+                  {historyDetailsOpen.customer ? "Hide Quote Info" : "Show Quote Info"}
+                </button>
+                {historyDetailsOpen.customer ? (
+                  <div style={{ display: "grid", gap: "10px" }}>
+                    <div>
+                      <strong style={{ color: "#93c5fd" }}>Customer:</strong>{" "}
+                      {selectedHistoryQuote.customer_name || "Unnamed customer"}
+                    </div>
+                    <div>
+                      <strong style={{ color: "#93c5fd" }}>Email:</strong>{" "}
+                      {selectedHistoryQuote.customer_email || "N/A"}
+                    </div>
+                    <div>
+                      <strong style={{ color: "#93c5fd" }}>Phone:</strong>{" "}
+                      {selectedHistoryQuote.customer_phone || "N/A"}
+                    </div>
+                    <div>
+                      <strong style={{ color: "#93c5fd" }}>Address:</strong>{" "}
+                      {selectedHistoryQuote.address1}, {selectedHistoryQuote.city},{" "}
+                      {selectedHistoryQuote.province} {selectedHistoryQuote.postal_code}
+                    </div>
+                    <div style={{ fontSize: isMobile ? 22 : undefined, fontWeight: isMobile ? 800 : undefined }}>
+                      <strong style={{ color: "#93c5fd" }}>Total:</strong> $
+                      {(Number(selectedHistoryQuote.quote_total_cents || 0) / 100).toFixed(2)}
+                    </div>
+                    <div>
+                      <strong style={{ color: "#93c5fd" }}>Service:</strong>{" "}
+                      {selectedHistoryQuote.service_name || "Quote"}
+                    </div>
+                    <div>
+                      <strong style={{ color: "#93c5fd" }}>ETA:</strong>{" "}
+                      {selectedHistoryQuote.eta || "N/A"}
+                    </div>
+                    {selectedHistoryQuote.shipping_details ? (
+                      <div>
+                        <strong style={{ color: "#93c5fd" }}>Shipping Details:</strong>{" "}
+                        {selectedHistoryQuote.shipping_details}
+                      </div>
+                    ) : null}
+                    <div>
+                      <strong style={{ color: "#93c5fd" }}>Summary:</strong>{" "}
+                      {selectedHistoryQuote.summary || "N/A"}
+                    </div>
+                    <div>
+                      <strong style={{ color: "#93c5fd" }}>Notes:</strong>{" "}
+                      {selectedHistoryQuote.description || "N/A"}
+                    </div>
                   </div>
                 ) : null}
-                <div>
-                  <strong style={{ color: "#93c5fd" }}>Notes:</strong>{" "}
-                  {selectedHistoryQuote.description || "N/A"}
-                </div>
 
                 <div style={{ marginTop: 10 }}>
-                  <h3 style={{ margin: "0 0 10px 0", fontSize: 16, color: "#f8fafc" }}>
-                    Line Items
-                  </h3>
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {(selectedHistoryQuote.line_items || []).map((line, index) => (
-                      <div
-                        key={`${line.sku}-${index}`}
-                        style={{
-                          border: "1px solid #1f2937",
-                          borderRadius: 12,
-                          padding: 12,
-                          background: "rgba(2, 6, 23, 0.72)",
-                        }}
-                      >
-                        <div style={{ fontWeight: 700 }}>{line.title}</div>
-                        <div style={{ color: "#93c5fd", marginTop: 4 }}>
-                          {line.sku} · Qty {line.quantity}
+                  <button
+                    type="button"
+                    onClick={() => toggleHistorySection("lineItems")}
+                    style={mobileActionButtonStyle}
+                  >
+                    {historyDetailsOpen.lineItems ? "Hide Line Items" : "Show Line Items"}
+                  </button>
+                  {historyDetailsOpen.lineItems ? (
+                    <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+                      {(selectedHistoryQuote.line_items || []).map((line, index) => (
+                        <div
+                          key={`${line.sku}-${index}`}
+                          style={{
+                            border: "1px solid #1f2937",
+                            borderRadius: 12,
+                            padding: 12,
+                            background: "rgba(2, 6, 23, 0.72)",
+                            overflowWrap: "anywhere",
+                          }}
+                        >
+                          <div style={{ fontWeight: 700 }}>{line.title}</div>
+                          <div style={{ color: "#93c5fd", marginTop: 4 }}>
+                            {line.sku} · Qty {line.quantity}
+                          </div>
+                          <div style={{ color: "#9ca3af", marginTop: 4, fontSize: 14 }}>
+                            Unit ${Number(line.price || 0).toFixed(2)} · Total $
+                            {(Number(line.price || 0) * Number(line.quantity || 0)).toFixed(2)}
+                          </div>
                         </div>
-                        <div style={{ color: "#9ca3af", marginTop: 4, fontSize: 14 }}>
-                          Unit ${Number(line.price || 0).toFixed(2)} · Total $
-                          {(Number(line.price || 0) * Number(line.quantity || 0)).toFixed(2)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
               <div>
-                <h3 style={{ margin: "0 0 10px 0", fontSize: 16, color: "#f8fafc" }}>
-                  Source Breakdown
-                </h3>
-                <div style={{ display: "grid", gap: 12 }}>
-                  {(selectedHistoryQuote.source_breakdown || []).map((source, index) => (
-                    <div
-                      key={`${source.vendor}-${index}`}
-                      style={{
-                        border: "1px solid #1f2937",
-                        borderRadius: "12px",
-                        padding: "14px",
-                        background: "rgba(2, 6, 23, 0.72)",
-                      }}
-                    >
-                      <div style={{ fontWeight: 700, color: "#f8fafc" }}>
-                        {source.vendor}
-                      </div>
-                      <div style={{ color: "#93c5fd", marginTop: "4px" }}>
-                        Total Qty: {source.quantity}
-                      </div>
+                <button
+                  type="button"
+                  onClick={() => toggleHistorySection("sourceBreakdown")}
+                  style={mobileActionButtonStyle}
+                >
+                  {historyDetailsOpen.sourceBreakdown
+                    ? "Hide Source Breakdown"
+                    : "Show Source Breakdown"}
+                </button>
+                {historyDetailsOpen.sourceBreakdown ? (
+                  <div style={{ display: "grid", gap: 12, marginTop: 10 }}>
+                    {(selectedHistoryQuote.source_breakdown || []).map((source, index) => (
                       <div
+                        key={`${source.vendor}-${index}`}
                         style={{
-                          color: "#9ca3af",
-                          marginTop: "8px",
-                          fontSize: "14px",
+                          border: "1px solid #1f2937",
+                          borderRadius: "12px",
+                          padding: "14px",
+                          background: "rgba(2, 6, 23, 0.72)",
+                          overflowWrap: "anywhere",
                         }}
                       >
-                        {source.items.join(", ")}
+                        <div style={{ fontWeight: 700, color: "#f8fafc" }}>
+                          {source.vendor}
+                        </div>
+                        <div style={{ color: "#93c5fd", marginTop: "4px" }}>
+                          Total Qty: {source.quantity}
+                        </div>
+                        <div
+                          style={{
+                            color: "#9ca3af",
+                            marginTop: "8px",
+                            fontSize: "14px",
+                          }}
+                        >
+                          {source.items.join(", ")}
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
         ) : null}
       </div>
+      {isMobile ? (
+        <div style={mobileBottomNavStyle}>
+          {canAccess("quoteTool") ? (
+            <a href={mobileDashboardHref} style={mobileTabLinkStyle(false)}>
+            <span style={mobileTabIconStyle(false)}>D</span>
+            <span>Dashboard</span>
+          </a>
+          ) : null}
+          <a href={isEmbeddedRoute ? "/app/custom-quote" : "/custom-quote"} style={mobileTabLinkStyle(true)}>
+            <span style={mobileTabIconStyle(true)}>Q</span>
+            <span>Quote Tool</span>
+          </a>
+          {canAccess("reviewQuotes") ? (
+            <a href={quoteReviewHref} style={mobileTabLinkStyle(false)}>
+            <span style={mobileTabIconStyle(false)}>R</span>
+            <span>Review</span>
+          </a>
+          ) : null}
+          {canAccess("dispatch") ? (
+            <a href={dispatchHref} style={mobileTabLinkStyle(false)}>
+            <span style={mobileTabIconStyle(false)}>X</span>
+            <span>Dispatch</span>
+          </a>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

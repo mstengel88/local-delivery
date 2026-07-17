@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Green Hills Dispatch</title>
+  <defs>
+    <linearGradient id="bg" x1="72" y1="48" x2="432" y2="472" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9be611"/>
+      <stop offset="1" stop-color="#0ca9e8"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="140" y1="128" x2="388" y2="396" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="1" stop-color="#050815"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#070b18"/>
+  <circle cx="256" cy="256" r="202" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="170" fill="#93d600"/>
+  <path d="M120 330h272c22 0 40-18 40-40v-80c0-22-18-40-40-40H120c-22 0-40 18-40 40v80c0 22 18 40 40 40Z" fill="url(#panel)"/>
+  <path d="M126 250h260" stroke="#ffffff" stroke-width="26" stroke-linecap="round"/>
+  <path d="M124 294h178" stroke="#ffffff" stroke-width="26" stroke-linecap="round"/>
+  <path d="M344 294h42" stroke="#ffffff" stroke-width="26" stroke-linecap="round"/>
+  <path d="M145 218h65l-48 85h-55l20-36h-28l28-49h18Zm103 0h57l-49 85h-57l49-85Zm83 0h57l-49 85h-57l49-85Z" fill="#ffffff"/>
+  <path d="M132 364h248" stroke="#070b18" stroke-width="22" stroke-linecap="round"/>
+</svg>

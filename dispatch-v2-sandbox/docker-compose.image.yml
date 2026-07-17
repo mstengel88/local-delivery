@@ -1,0 +1,4 @@
+services:
+  dispatch-v2-sandbox:
+    image: dispatch-v2-sandbox:latest
+    build: null
