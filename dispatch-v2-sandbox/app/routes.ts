@@ -28,6 +28,7 @@ export default [
   route("api/delete-quote", "routes/api.delete-quote.ts"),
   route("api/calculate-distances", "routes/api.calculate-distances.ts"),
   route("api/driver-location", "routes/api.driver-location.ts"),
+  route("api/ghos-export", "routes/api.ghos-export.ts"),
   route("setup-status", "routes/setup-status.ts"),
   route("health", "routes/health.ts"),
 ] satisfies RouteConfig;
