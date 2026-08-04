@@ -182,10 +182,6 @@
   }
 
   function applyCollectionLabels() {
-    if (pageData.pageType === "collection" || pageData.pageType === "search") {
-      return;
-    }
-
     const collectionProducts = pageData.collectionProducts || {};
     if (!Object.keys(collectionProducts).length) return;
 
@@ -195,6 +191,8 @@
 
     productCardContainers().forEach((container) => {
       if (!(container instanceof HTMLElement)) return;
+      if (container.querySelector(".gh-price-unit, .ghs-unit-label")) return;
+
       const anchor = container.querySelector("a[href*='/products/']");
       if (!(anchor instanceof HTMLAnchorElement)) return;
 
@@ -278,7 +276,8 @@
     const handles = new Set();
     const productHandle = currentProductHandle();
     if (productHandle) handles.add(productHandle);
-    collectionHandles().forEach((handle) => handles.add(handle));
+    const detectedCollectionHandles = collectionHandles();
+    detectedCollectionHandles.forEach((handle) => handles.add(handle));
     setDebug("Handles detected", { handles: Array.from(handles), shop, apiUrl });
 
     const fetchedPayload = await fetchLabels(Array.from(handles));
@@ -295,6 +294,12 @@
         fetchedLabelsByHandle[productHandle] || fetchedLabelsBySku[pageData.product?.sku];
     }
     const nextCollectionProducts = { ...(pageData.collectionProducts || {}) };
+    detectedCollectionHandles.forEach((handle) => {
+      if (!nextCollectionProducts[handle]) {
+        nextCollectionProducts[handle] = { unitLabel: "" };
+      }
+    });
+
     Object.keys(nextCollectionProducts).forEach((handle) => {
       const entry = nextCollectionProducts[handle];
       const sku = entry && typeof entry === "object" ? entry.sku : undefined;
