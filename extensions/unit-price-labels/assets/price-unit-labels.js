@@ -182,6 +182,10 @@
   }
 
   function applyCollectionLabels() {
+    if (pageData.pageType === "collection" || pageData.pageType === "search") {
+      return;
+    }
+
     const collectionProducts = pageData.collectionProducts || {};
     if (!Object.keys(collectionProducts).length) return;
 
