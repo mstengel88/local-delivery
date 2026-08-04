@@ -200,10 +200,18 @@
         typeof productData === "string" ? productData : productData?.unitLabel || null;
       if (!unitLabel) return;
 
+      const salePriceElement = container.querySelector(".f-price-item--sale");
+      const regularPriceElement = container.querySelector(".f-price-item--regular");
+      const wrapperPriceElement = container.querySelector(".f-price");
+
       const hyperPriceElement =
-        container.querySelector(".f-price-item--sale") ||
-        container.querySelector(".f-price-item--regular") ||
-        container.querySelector(".f-price");
+        (salePriceElement instanceof HTMLElement && hasCurrencyText(salePriceElement)
+          ? salePriceElement
+          : null) ||
+        (regularPriceElement instanceof HTMLElement && hasCurrencyText(regularPriceElement)
+          ? regularPriceElement
+          : null) ||
+        wrapperPriceElement;
 
       const priceElement =
         hyperPriceElement ||
