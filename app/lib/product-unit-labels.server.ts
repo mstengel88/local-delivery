@@ -44,6 +44,20 @@ type SkuLookupRow = {
   price_unit_label?: string | null;
 };
 
+type ProductVariantsByProductIdNode = {
+  id?: string | null;
+  title?: string | null;
+  featuredImage?: {
+    url?: string | null;
+  } | null;
+  variants?: {
+    nodes?: Array<{
+      id?: string | null;
+      sku?: string | null;
+    }> | null;
+  } | null;
+};
+
 export const productUnitLabelDefinition = {
   namespace: UNIT_LABEL_NAMESPACE,
   key: UNIT_LABEL_KEY,
@@ -419,7 +433,97 @@ export async function saveProductUnitLabels(
     userErrors.push(...(deleteJson?.data?.metafieldsDelete?.userErrors ?? []));
   }
 
+  if (!userErrors.length) {
+    try {
+      await syncProductUnitLabelsToSupabase(admin, updates);
+    } catch (error: any) {
+      console.error("[SYNC UNIT LABELS TO SUPABASE ERROR]", error);
+      userErrors.push({
+        message: error?.message || "Saved Shopify labels, but failed to sync Supabase labels.",
+      });
+    }
+  }
+
   return { userErrors };
+}
+
+async function syncProductUnitLabelsToSupabase(
+  admin: AdminGraphqlClient,
+  updates: Array<{ productId: string; unitLabel: string }>,
+) {
+  const uniqueProductIds = Array.from(
+    new Set(updates.map((update) => update.productId.trim()).filter(Boolean)),
+  );
+
+  if (!uniqueProductIds.length) return;
+
+  const updatesByProductId = new Map(
+    updates.map((update) => [update.productId.trim(), update.unitLabel.trim()]),
+  );
+
+  const rows: Array<{
+    sku: string;
+    unit_label: string | null;
+    price_unit_label: string | null;
+    updated_at: string;
+  }> = [];
+
+  for (let index = 0; index < uniqueProductIds.length; index += 50) {
+    const chunk = uniqueProductIds.slice(index, index + 50);
+    const response = await admin.graphql(
+      `#graphql
+        query ProductVariantsByProductIds($ids: [ID!]!) {
+          nodes(ids: $ids) {
+            ... on Product {
+              id
+              title
+              featuredImage {
+                url
+              }
+              variants(first: 100) {
+                nodes {
+                  id
+                  sku
+                }
+              }
+            }
+          }
+        }
+      `,
+      { variables: { ids: chunk } },
+    );
+
+    const json = await response.json();
+    const nodes = (json?.data?.nodes ?? []) as ProductVariantsByProductIdNode[];
+
+    for (const product of nodes) {
+      const productId = (product?.id || "").trim();
+      const unitLabel = updatesByProductId.get(productId);
+      if (unitLabel === undefined) continue;
+
+      for (const variant of product?.variants?.nodes || []) {
+        const sku = (variant?.sku || "").trim();
+        if (!sku) continue;
+
+        rows.push({
+          sku,
+          unit_label: unitLabel || null,
+          price_unit_label: unitLabel || null,
+          updated_at: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  if (!rows.length) return;
+
+  const { error } = await supabaseAdmin
+    .from("product_source_map")
+    .upsert(rows, { onConflict: "sku" });
+
+  if (error) {
+    throw error;
+  }
 }
 
 export async function getProductUnitLabelsByHandlesAndSkus(
