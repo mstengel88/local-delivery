@@ -16,6 +16,7 @@ import {
 } from "../lib/dispatch.server";
 import { requireDispatchUser } from "../lib/auth.server";
 import { PermissionNav } from "../components/PermissionNav";
+import { useDispatchVersionRevalidator } from "../components/useDispatchVersionRevalidator";
 
 export async function loader({ request }: { request: Request }) {
   await requireDispatchUser(request, "loader");
@@ -84,6 +85,7 @@ export default function LoaderBoard() {
   } | undefined;
   const navigation = useNavigation();
   const revalidator = useRevalidator();
+  useDispatchVersionRevalidator(revalidator, { intervalMs: 6000 });
   const [showPreparedPopup, setShowPreparedPopup] = useState(false);
 
   useEffect(() => {

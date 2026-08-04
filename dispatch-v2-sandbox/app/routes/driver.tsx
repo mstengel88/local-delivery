@@ -18,6 +18,7 @@ import {
 } from "../lib/dispatch.server";
 import { requireDispatchUser } from "../lib/auth.server";
 import { PermissionNav } from "../components/PermissionNav";
+import { useDispatchVersionRevalidator } from "../components/useDispatchVersionRevalidator";
 
 export async function loader({ request }: { request: Request }) {
   const currentUser = await requireDispatchUser(request, "driver");
@@ -96,9 +97,11 @@ export async function action({ request }: { request: Request }) {
       return data({
         ok: true,
         intent,
-        message: "Stop delivered. Next stop is ready.",
+        message: updatedOrder.updatedOrders?.length > 1
+          ? `Stop delivered. ${updatedOrder.updatedOrders.length} tickets from this Shopify order were completed.`
+          : "Stop delivered. Next stop is ready.",
         updatedOrder,
-        skipDriverRevalidate: true,
+        updatedOrders: updatedOrder.updatedOrders || [updatedOrder],
       });
     } catch (error) {
       return data(
@@ -265,6 +268,7 @@ export default function DriverRoute() {
   } | undefined;
   const navigation = useNavigation();
   const revalidator = useRevalidator();
+  useDispatchVersionRevalidator(revalidator, { intervalMs: 6000 });
   const driverAttachment = currentStop ? driverAttachmentFromChecklist(currentStop) : null;
   const lastLocationSentAtRef = useRef(0);
   const [trackingStatus, setTrackingStatus] = useState("GPS tracking has not started yet.");
@@ -370,9 +374,14 @@ export default function DriverRoute() {
     setDriverState((current) => {
       if (!current.selectedRoute) return current;
 
+      const deliveredIds = new Set(
+        actionData.intent === "delivered"
+          ? (actionData.updatedOrders || [updatedOrder]).map((order: DispatchOrder) => order.id)
+          : [],
+      );
       const nextRouteOrders =
         actionData.intent === "delivered"
-          ? current.selectedRoute.orders.filter((order) => order.id !== updatedOrder.id)
+          ? current.selectedRoute.orders.filter((order) => !deliveredIds.has(order.id))
           : current.selectedRoute.orders.map((order) =>
               order.id === updatedOrder.id ? updatedOrder : order,
             );
@@ -652,7 +661,7 @@ export default function DriverRoute() {
           <div className="detailGrid">
             <div>
               <span>Material</span>
-              <strong>{currentStop.quantity} {currentStop.unit} {currentStop.material}</strong>
+              <strong>{currentStop.loadLabel || `${currentStop.quantity} ${currentStop.unit} ${currentStop.material}`}</strong>
             </div>
             <div>
               <span>Phone / Email</span>

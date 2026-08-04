@@ -1,4 +1,5 @@
 import shopify from "../shopify.server";
+import { supabaseAdmin } from "./supabase.server";
 
 const UNIT_LABEL_NAMESPACE = "green_hills";
 const UNIT_LABEL_KEY = "price_unit_label";
@@ -20,6 +21,21 @@ export const DEFAULT_LABEL_COLOR = "#d1d5db";
 
 type AdminGraphqlClient = {
   graphql: (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response>;
+};
+
+type HandleLookupProductNode = {
+  handle?: string | null;
+  metafield?: {
+    value?: string | null;
+  } | null;
+  legacyUnitLabel?: {
+    value?: string | null;
+  } | null;
+  variants?: {
+    nodes?: Array<{
+      sku?: string | null;
+    }> | null;
+  } | null;
 };
 
 export const productUnitLabelDefinition = {
@@ -324,6 +340,14 @@ export async function getProductUnitLabelsByHandles(shop: string, handles: strin
             metafield(namespace: "green_hills", key: "price_unit_label") {
               value
             }
+            legacyUnitLabel: metafield(namespace: "$app", key: "price_unit_label") {
+              value
+            }
+            variants(first: 50) {
+              nodes {
+                sku
+              }
+            }
           }
         }
       }
@@ -337,11 +361,58 @@ export async function getProductUnitLabelsByHandles(shop: string, handles: strin
   );
 
   const json = await response.json();
-  const nodes = json?.data?.products?.nodes ?? [];
-  const labels = nodes.reduce((acc: Record<string, string>, product: any) => {
-    if (product?.handle && product?.metafield?.value) {
-      acc[product.handle] = product.metafield.value;
+  const nodes = (json?.data?.products?.nodes ?? []) as HandleLookupProductNode[];
+
+  const skuSet = new Set<string>();
+  for (const product of nodes) {
+    for (const variant of product?.variants?.nodes || []) {
+      const sku = (variant?.sku || "").trim();
+      if (sku) skuSet.add(sku);
     }
+  }
+
+  const supabaseLabelsBySku = new Map<string, string>();
+  if (skuSet.size) {
+    const { data, error } = await supabaseAdmin
+      .from("product_source_map")
+      .select("sku, unit_label, price_unit_label")
+      .in("sku", Array.from(skuSet));
+
+    if (error) {
+      console.error("[SUPABASE UNIT LABEL LOOKUP ERROR]", error);
+    } else {
+      for (const row of data || []) {
+        const sku = String(row.sku || "").trim();
+        const label = String(row.unit_label || row.price_unit_label || "").trim();
+        if (sku && label && !supabaseLabelsBySku.has(sku)) {
+          supabaseLabelsBySku.set(sku, label);
+        }
+      }
+    }
+  }
+
+  const labels = nodes.reduce((acc: Record<string, string>, product) => {
+    const handle = (product?.handle || "").trim();
+    if (!handle) return acc;
+
+    const shopifyLabel = String(
+      product?.metafield?.value || product?.legacyUnitLabel?.value || "",
+    ).trim();
+
+    if (shopifyLabel) {
+      acc[handle] = shopifyLabel;
+      return acc;
+    }
+
+    for (const variant of product?.variants?.nodes || []) {
+      const sku = (variant?.sku || "").trim();
+      const supabaseLabel = sku ? supabaseLabelsBySku.get(sku) : "";
+      if (supabaseLabel) {
+        acc[handle] = supabaseLabel;
+        break;
+      }
+    }
+
     return acc;
   }, {});
 

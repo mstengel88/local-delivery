@@ -5,7 +5,7 @@ import {
 } from "../lib/custom-quotes.server";
 import { hasAdminQuoteAccess } from "../lib/admin-quote-auth.server";
 import { getQuote } from "../lib/quote-engine.server";
-import { getConfiguredQuoteTaxRate } from "../lib/quote-tax";
+import { getBestQuoteTaxRateForAddress } from "../lib/quote-tax.server";
 
 function normalizeQuantity(value: FormDataEntryValue | null) {
   const quantity = Number(value || 0);
@@ -112,7 +112,14 @@ export async function action({ request }: { request: Request }) {
     })),
   });
   const deliveryAmount = Number(deliveryQuote.cents || 0) / 100;
-  const taxRate = getConfiguredQuoteTaxRate();
+  const taxRate = (await getBestQuoteTaxRateForAddress({
+    address1,
+    address2,
+    city,
+    province,
+    postalCode,
+    country,
+  })).rate;
   const taxAmount = productsSubtotal * taxRate;
   const totalAmount = productsSubtotal + deliveryAmount + taxAmount;
 

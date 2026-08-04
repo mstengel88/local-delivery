@@ -181,6 +181,7 @@ function searchText(order: DispatchOrder) {
     order.contact,
     order.address,
     order.city,
+    order.loadLabel,
     order.material,
     order.quantity,
     order.unit,
@@ -475,7 +476,7 @@ export default function DeliveredPage() {
                   <strong>{order.customer || "No customer"}</strong>
                   <span>{fullAddress(order) || "No address"}</span>
                 </div>
-                <small>{orderNumber(order)} · {order.quantity} {order.unit} · {order.material}</small>
+                <small>{orderNumber(order)} · {order.loadLabel || `${order.quantity} ${order.unit} · ${order.material}`}</small>
                 <small>{deliveredAtLabel(order)}</small>
               </Link>
             ))}
@@ -564,7 +565,7 @@ export default function DeliveredPage() {
                 </div>
                 <div>
                   <span>Load</span>
-                  <strong>{selectedOrder.quantity} {selectedOrder.unit} {selectedOrder.material}</strong>
+                  <strong>{selectedOrder.loadLabel || `${selectedOrder.quantity} ${selectedOrder.unit} ${selectedOrder.material}`}</strong>
                 </div>
                 <div>
                   <span>Requested</span>

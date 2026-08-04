@@ -18,6 +18,7 @@ import {
   getMapsConfigStatus,
   loadDispatchOperationalSettings,
   loadBoardState,
+  parseDispatchLineItemsText,
   reorderStop,
   unassignOrder,
   type DistanceCalculationResult,
@@ -27,6 +28,7 @@ import {
 } from "../lib/dispatch.server";
 import { requireDispatchEditor, requireDispatchUser } from "../lib/auth.server";
 import { PermissionNav } from "../components/PermissionNav";
+import { useDispatchVersionRevalidator } from "../components/useDispatchVersionRevalidator";
 
 function todayDateKey() {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -131,6 +133,11 @@ export async function action({ request }: { request: Request }) {
     const material = String(form.get("material") || "").trim();
     const quantity = String(form.get("quantity") || "").trim();
     const unit = String(form.get("unit") || "").trim();
+    const lineItems = parseDispatchLineItemsText(String(form.get("lineItemsText") || ""), {
+      material,
+      quantity,
+      unit,
+    });
 
     if (!customer || !address || !city || !material || !quantity || !unit) {
       return data({ ok: false, message: "Customer, address, city, material, quantity, and unit are required." }, { status: 400 });
@@ -145,6 +152,7 @@ export async function action({ request }: { request: Request }) {
       material,
       quantity,
       unit,
+      lineItems,
       requestedWindow: String(form.get("requestedWindow") || ""),
       timePreference: String(form.get("timePreference") || "Anytime"),
       notes: String(form.get("notes") || ""),
@@ -203,8 +211,18 @@ export async function action({ request }: { request: Request }) {
     const routeId = String(form.get("routeId") || "").trim();
     if (!routeId) return data({ ok: false, message: "Missing route." }, { status: 400 });
     const splitCount = Number(String(form.get("splitCount") || "0"));
+    const capacityOverridePassword = String(form.get("capacityOverridePassword") || "");
+    const verifiedQuantity = String(form.get("verifiedQuantity") || "");
+    const groupShopifyAddOns = String(form.get("groupShopifyAddOns") || "1") !== "0";
     try {
-      const assignment = await assignOrder(orderId, routeId, splitCount);
+      const assignment = await assignOrder(
+        orderId,
+        routeId,
+        splitCount,
+        capacityOverridePassword,
+        verifiedQuantity,
+        groupShopifyAddOns,
+      );
       return data({
         ok: true,
         message: assignment.message,
@@ -248,6 +266,32 @@ function orderNumber(order: DispatchOrder) {
   return order.orderNumber ? `#${order.orderNumber}` : order.id;
 }
 
+function parsedChecklist(order: DispatchOrder) {
+  try {
+    return JSON.parse(order.checklistJson || "{}") as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function shopifyGroupId(order: DispatchOrder) {
+  const checklist = parsedChecklist(order);
+  return String(checklist.shopifyOrderId || checklist.shopifyOrderName || "").trim();
+}
+
+function shopifySku(order: DispatchOrder) {
+  const checklist = parsedChecklist(order);
+  return String(checklist.sku || checklist.productSourceSku || "").trim();
+}
+
+function isShopifyAddOnSku(order: DispatchOrder) {
+  return /^(500|700)(?:\D|$)/i.test(shopifySku(order));
+}
+
+function baseOrderNumber(order: DispatchOrder) {
+  return String(order.orderNumber || "").trim().replace(/[a-z]$/i, "");
+}
+
 function orderSearchText(order: DispatchOrder) {
   return [
     order.id,
@@ -256,6 +300,7 @@ function orderSearchText(order: DispatchOrder) {
     order.contact,
     order.address,
     order.city,
+    order.loadLabel,
     order.material,
     order.quantity,
     order.unit,
@@ -313,6 +358,75 @@ function compactDeliveredTime(value?: string | null) {
   });
 }
 
+function compactRouteTime(value?: Date | string | null) {
+  if (!value) return "--";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  return date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function addMinutes(date: Date, minutes: number) {
+  const next = new Date(date);
+  next.setMinutes(next.getMinutes() + minutes);
+  return next;
+}
+
+function routeDeliveryWindows(route: { orders: DispatchOrder[]; deliveredOrders?: DispatchOrder[] }) {
+  const windows: Record<string, string> = {};
+  const seen = new Set<string>();
+  const stops = [...(route.deliveredOrders || []), ...route.orders]
+    .filter((order) => {
+      if (seen.has(order.id)) return false;
+      seen.add(order.id);
+      return true;
+    })
+    .sort((left, right) => {
+      const leftSequence = Number(left.stopSequence || 0) || 9999;
+      const rightSequence = Number(right.stopSequence || 0) || 9999;
+      if (leftSequence !== rightSequence) return leftSequence - rightSequence;
+      return orderNumber(left).localeCompare(orderNumber(right), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+
+  let anchorTime: Date | null = null;
+  let elapsedFromAnchor = 0;
+
+  for (const order of stops) {
+    const roundTripMinutes = Math.max(0, Math.round(Number(order.travelMinutes || 0)));
+    const oneWayMinutes = Math.max(0, Math.round(roundTripMinutes / 2));
+    const deliveredAt = order.deliveredAt ? new Date(order.deliveredAt) : null;
+    const departedAt = order.departedAt ? new Date(order.departedAt) : null;
+    const hasDeliveredAt = deliveredAt && !Number.isNaN(deliveredAt.getTime());
+    const hasDepartedAt = departedAt && !Number.isNaN(departedAt.getTime());
+
+    if ((order.status === "delivered" || order.deliveryStatus === "delivered") && hasDeliveredAt) {
+      anchorTime = deliveredAt;
+      elapsedFromAnchor = oneWayMinutes;
+      windows[order.id] = `Delivered ${compactRouteTime(deliveredAt)}`;
+      continue;
+    }
+
+    if (hasDepartedAt) {
+      anchorTime = departedAt;
+      elapsedFromAnchor = 0;
+    }
+
+    if (!anchorTime) continue;
+
+    const arrivalStart = addMinutes(anchorTime, elapsedFromAnchor + oneWayMinutes);
+    const arrivalEnd = addMinutes(arrivalStart, 120);
+    windows[order.id] = `${compactRouteTime(arrivalStart)} - ${compactRouteTime(arrivalEnd)}`;
+    elapsedFromAnchor += roundTripMinutes;
+  }
+
+  return windows;
+}
+
 function travelLabel(order: DispatchOrder) {
   const minutes = Number(order.travelMinutes || 0);
   const miles = Number(order.travelMiles || 0);
@@ -368,6 +482,13 @@ function numericValue(value?: string | number | null) {
 }
 
 function orderQuantity(order: DispatchOrder) {
+  const unitLabel = capacityUnit(order.unit);
+  if (unitLabel && order.lineItems.length > 1) {
+    const lineItemTotal = order.lineItems
+      .filter((item) => capacityUnit(item.unit) === unitLabel)
+      .reduce((total, item) => total + numericValue(item.quantity), 0);
+    if (lineItemTotal > 0) return lineItemTotal;
+  }
   return numericValue(order.quantity);
 }
 
@@ -436,6 +557,7 @@ export default function Board() {
   const fetcherDistanceResult = fetcherData?.result;
   const visibleDistanceResult = distanceResult || fetcherDistanceResult;
   const revalidator = useRevalidator();
+  useDispatchVersionRevalidator(revalidator, { intervalMs: 6000 });
   const [boardState, setBoardState] = useState<DispatchBoardState>(() => ({
     orders: loaderData.orders,
     routes: loaderData.routes,
@@ -593,6 +715,13 @@ export default function Board() {
       ) as Record<string, number>,
     [boardState.routes],
   );
+  const routeDeliveryWindowLabels = useMemo(
+    () =>
+      Object.fromEntries(
+        boardState.routes.map((route) => [route.id, routeDeliveryWindows(route)]),
+      ) as Record<string, Record<string, string>>,
+    [boardState.routes],
+  );
   const boardTotals = useMemo(() => {
     const assignedOrders = boardState.routes.flatMap((route) => route.orders);
     const assignedTravelMinutes = assignedOrders.reduce(
@@ -621,16 +750,19 @@ export default function Board() {
   }, [boardState.routes, boardState.unscheduled, selectedDetailOrderId]);
 
   function submitMutation(payload: Record<string, string>) {
-    if (payload.intent !== "assign" || Number(payload.splitCount || 0) <= 1) {
+    if (
+      (payload.intent !== "assign" || Number(payload.splitCount || 0) <= 1) &&
+      !payload.capacityOverridePassword
+    ) {
       applyOptimisticMutation(payload);
     }
     fetcher.submit(payload, { method: "post" });
   }
 
-  function getAssignmentSplitCount(order: DispatchOrder, routeId: string) {
+  function getAssignmentCapacityPayload(order: DispatchOrder, routeId: string) {
     const route = boardState.routes.find((entry) => entry.id === routeId);
     const unitLabel = capacityUnit(order.unit);
-    if (!unitLabel) return "";
+    if (!unitLabel) return {};
 
     if (!route?.truck?.trim()) {
       window.alert("Assign a truck number to this route before adding ton or yard loads.");
@@ -639,13 +771,27 @@ export default function Board() {
 
     const quantity = orderQuantity(order);
     const capacity = routeTruckCapacity(route, order.unit);
-    if (!quantity || !capacity || quantity <= capacity) return "";
+    if (!quantity || !capacity || quantity <= capacity) return {};
 
     const minimumSplits = Math.ceil(quantity / capacity);
-    const answer = window.prompt(
+    const shouldSplit = window.confirm(
       `${orderNumber(order)} is ${formatSplitQuantity(quantity)} ${unitLabel}, which is over ${route.truck}'s ${formatSplitQuantity(
         capacity,
-      )} ${unitLabel} limit.\n\nHow many tickets should I split it into?`,
+      )} ${unitLabel} limit.\n\nPress OK to split the order into multiple tickets.\nPress Cancel for a manager override for this one delivery.`,
+    );
+
+    if (!shouldSplit) {
+      const password = window.prompt("Manager override password for this one delivery:");
+      if (password === null) return null;
+      if (!password.trim()) {
+        window.alert("Manager override password is required.");
+        return null;
+      }
+      return { capacityOverridePassword: password };
+    }
+
+    const answer = window.prompt(
+      `How many tickets should I split ${orderNumber(order)} into?`,
       String(minimumSplits),
     );
 
@@ -656,17 +802,62 @@ export default function Board() {
       return null;
     }
 
-    return String(splitCount);
+    return { splitCount: String(splitCount) };
+  }
+
+  function getQueueQuantityVerificationPayload(order: DispatchOrder) {
+    const expectedQuantity = orderQuantity(order);
+    if (!expectedQuantity) {
+      window.alert("This order is missing a quantity, so it cannot be assigned yet.");
+      return null;
+    }
+
+    const answer = window.prompt(
+      `PLEASE CHECK SHOPIFY FOR ANY CHANGES!!\n\nEnter the order quantity to move ${orderNumber(order)} to a route:`,
+      "",
+    );
+
+    if (answer === null) return null;
+    const typedQuantity = numericValue(answer);
+    if (!typedQuantity || Math.abs(typedQuantity - expectedQuantity) > 0.0001) {
+      window.alert("Quantity verification failed. Please check Shopify, then enter the correct order quantity.");
+      return null;
+    }
+
+    return { verifiedQuantity: formatSplitQuantity(typedQuantity) };
   }
 
   function submitAssignment(order: DispatchOrder, routeId: string) {
-    const splitCount = getAssignmentSplitCount(order, routeId);
-    if (splitCount === null) return;
+    const isQueueOrder = boardState.unscheduled.some((entry) => entry.id === order.id);
+    const verificationPayload = isQueueOrder ? getQueueQuantityVerificationPayload(order) : {};
+    if (verificationPayload === null) return;
+    const capacityPayload = getAssignmentCapacityPayload(order, routeId);
+    if (capacityPayload === null) return;
+    const groupId = shopifyGroupId(order);
+    const orderBase = baseOrderNumber(order);
+    const addOnSiblings = groupId
+      ? [...boardState.unscheduled, ...boardState.routes.flatMap((route) => route.orders)]
+        .filter((entry) =>
+          entry.id !== order.id &&
+          shopifyGroupId(entry) === groupId &&
+          baseOrderNumber(entry) === orderBase &&
+          isShopifyAddOnSku(entry),
+        )
+      : [];
+    const groupShopifyAddOns = addOnSiblings.length
+      ? window.confirm(
+        `This Shopify order has add-on item${addOnSiblings.length === 1 ? "" : "s"} that can ride with this stop:\n\n${
+          addOnSiblings.map((entry) => `${orderNumber(entry)} · ${entry.loadLabel || `${entry.quantity} ${entry.unit} ${entry.material}`}`).join("\n")
+        }\n\nPress OK to assign them with this stop.\nPress Cancel to assign only ${orderNumber(order)}.`,
+      )
+      : true;
     submitMutation({
       intent: "assign",
       orderId: order.id,
       routeId,
-      ...(splitCount ? { splitCount } : {}),
+      groupShopifyAddOns: groupShopifyAddOns ? "1" : "0",
+      ...verificationPayload,
+      ...capacityPayload,
     });
   }
 
@@ -960,8 +1151,8 @@ export default function Board() {
                 <small>
                   {orderNumber(order)} · {order.quantity} {order.unit}
                 </small>
-                <small className="materialLine" title={order.material}>
-                  {order.material}
+                <small className="materialLine" title={order.loadLabel || order.material}>
+                  {order.loadLabel || order.material}
                 </small>
                 <small>{compactDate(order.requestedWindow)} · {order.timePreference}</small>
                 <small className={order.travelMinutes ? "travelChip" : "travelChip missing"}>
@@ -1043,8 +1234,8 @@ export default function Board() {
                       <small>
                         {order.quantity} {order.unit}
                       </small>
-                      <small className="materialLine" title={order.material}>
-                        {order.material}
+                      <small className="materialLine" title={order.loadLabel || order.material}>
+                        {order.loadLabel || order.material}
                       </small>
                       <div className="stopMetaChips">
                         <small className="timePreferenceChip">
@@ -1056,6 +1247,11 @@ export default function Board() {
                           </span>
                         </small>
                         {order.eta ? <small className="miniStatus">ETA {order.eta}</small> : null}
+                        <small className={routeDeliveryWindowLabels[route.id]?.[order.id] ? "deliveryWindowChip" : "deliveryWindowChip missing"}>
+                          {routeDeliveryWindowLabels[route.id]?.[order.id]
+                            ? `Window: ${routeDeliveryWindowLabels[route.id][order.id]}`
+                            : "Window starts after first Enroute"}
+                        </small>
                         <small className={order.travelMinutes ? "travelChip" : "travelChip missing"}>
                           {travelLabel(order)}
                         </small>
@@ -1196,6 +1392,15 @@ export default function Board() {
                 <option>Unit</option>
               </select>
             </label>
+            <label className="wideField">
+              Multiple items on this stop
+              <textarea
+                name="lineItemsText"
+                rows={3}
+                placeholder={"4 Bag Grass Seed\n2 Bag Fertilizer"}
+              />
+              <small className="muted">Optional. One item per line, all routed as one stop.</small>
+            </label>
             <label>
               Time
               <select name="timePreference" defaultValue="Anytime">
@@ -1261,8 +1466,8 @@ export default function Board() {
                 <small>{selectedDetail.order.city || "No city"}</small>
               </div>
               <div>
-                <span>Material</span>
-                <strong>{selectedDetail.order.material || "No material"}</strong>
+                <span>Load</span>
+                <strong>{selectedDetail.order.loadLabel || selectedDetail.order.material || "No material"}</strong>
               </div>
               <div>
                 <span>Quantity</span>
@@ -1287,6 +1492,15 @@ export default function Board() {
               <div>
                 <span>ETA</span>
                 <strong>{selectedDetail.order.eta || "Not set"}</strong>
+              </div>
+              <div>
+                <span>Delivery Window</span>
+                <strong>
+                  {selectedDetail.route
+                    ? routeDeliveryWindowLabels[selectedDetail.route.id]?.[selectedDetail.order.id] ||
+                      "Starts after first Enroute"
+                    : "Not assigned"}
+                </strong>
               </div>
               <div>
                 <span>Round Trip</span>

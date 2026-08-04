@@ -46,6 +46,8 @@ export async function action({ request }: any) {
         material_name: String(form.get("material_name") || "").trim(),
         truck_capacity: Number(form.get("truck_capacity") || 22),
         vendor_source: String(form.get("vendor_source") || "").trim(),
+        delivery_mode: String(form.get("delivery_mode") || "bulk").trim(),
+        capacity_unit: String(form.get("capacity_unit") || "quantity").trim(),
         is_active: form.get("is_active") === "on",
         sort_order: Number(form.get("sort_order") || 0),
       });
@@ -238,7 +240,7 @@ export default function AdminPage() {
               >
                 <input type="hidden" name="intent" value="save-rule" />
 
-                <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 160px 1fr 120px", gap: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 150px 150px 1fr 120px", gap: 12 }}>
                   <label>
                     Prefix
                     <br />
@@ -270,6 +272,32 @@ export default function AdminPage() {
                       defaultValue={rule.truck_capacity}
                       style={{ width: "100%", marginTop: 6 }}
                     />
+                  </label>
+
+                  <label>
+                    Cap unit
+                    <br />
+                    <select
+                      name="capacity_unit"
+                      defaultValue={rule.capacity_unit || "quantity"}
+                      style={{ width: "100%", marginTop: 6 }}
+                    >
+                      <option value="quantity">Qty / pallets</option>
+                      <option value="weight_lb">Weight (lb)</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Delivery type
+                    <br />
+                    <select
+                      name="delivery_mode"
+                      defaultValue={rule.delivery_mode || "bulk"}
+                      style={{ width: "100%", marginTop: 6 }}
+                    >
+                      <option value="bulk">Bulk material</option>
+                      <option value="paver">Paver / pallet</option>
+                    </select>
                   </label>
 
                   <label>
@@ -333,7 +361,7 @@ export default function AdminPage() {
             >
               <input type="hidden" name="intent" value="save-rule" />
 
-              <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 160px 1fr 120px", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 150px 150px 1fr 120px", gap: 12 }}>
                 <label>
                   Prefix
                   <br />
@@ -350,6 +378,24 @@ export default function AdminPage() {
                   Truck cap
                   <br />
                   <input type="number" name="truck_capacity" defaultValue={22} style={{ width: "100%", marginTop: 6 }} />
+                </label>
+
+                <label>
+                  Cap unit
+                  <br />
+                  <select name="capacity_unit" defaultValue="quantity" style={{ width: "100%", marginTop: 6 }}>
+                    <option value="quantity">Qty / pallets</option>
+                    <option value="weight_lb">Weight (lb)</option>
+                  </select>
+                </label>
+
+                <label>
+                  Delivery type
+                  <br />
+                  <select name="delivery_mode" defaultValue="bulk" style={{ width: "100%", marginTop: 6 }}>
+                    <option value="bulk">Bulk material</option>
+                    <option value="paver">Paver / pallet</option>
+                  </select>
                 </label>
 
                 <label>

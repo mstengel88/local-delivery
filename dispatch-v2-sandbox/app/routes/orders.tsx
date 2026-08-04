@@ -15,6 +15,7 @@ import {
   deleteDispatchOrder,
   loadOrderForMaintenance,
   loadOrdersForMaintenance,
+  parseDispatchLineItemsText,
   reopenDispatchOrder,
   saveDriverOrderAttachment,
   updateDispatchOrder,
@@ -79,6 +80,11 @@ export async function action({ request }: { request: Request }) {
     const material = String(form.get("material") || "").trim();
     const quantity = String(form.get("quantity") || "").trim();
     const unit = String(form.get("unit") || "").trim();
+    const lineItems = parseDispatchLineItemsText(String(form.get("lineItemsText") || ""), {
+      material,
+      quantity,
+      unit,
+    });
 
     if (!customer || !address || !city || !material || !quantity || !unit) {
       return data({ ok: false, message: "Customer, address, city, material, quantity, and unit are required." }, { status: 400 });
@@ -93,6 +99,7 @@ export async function action({ request }: { request: Request }) {
       material,
       quantity,
       unit,
+      lineItems,
       requestedWindow: String(form.get("requestedWindow") || ""),
       timePreference: String(form.get("timePreference") || "Anytime"),
       status: String(form.get("status") || "new") as DispatchOrder["status"],
@@ -347,7 +354,7 @@ export default function OrdersPage() {
               >
                 <strong>{orderNumber(order)} · {order.customer || "No customer"}</strong>
                 <span>{order.address}, {order.city}</span>
-                <small>{order.quantity} {order.unit} · {order.material}</small>
+                <small>{order.loadLabel || `${order.quantity} ${order.unit} · ${order.material}`}</small>
                 <small>{order.requestedWindow || "No date"} · {statusLabel(order)}</small>
               </Link>
             ))}
@@ -409,6 +416,20 @@ export default function OrdersPage() {
                       <option>Gallon</option>
                       <option>Unit</option>
                     </select>
+                  </label>
+                  <label className="wideField">
+                    Multiple items on this stop
+                    <textarea
+                      name="lineItemsText"
+                      rows={Math.max(3, selectedOrder.lineItems.length || 1)}
+                      defaultValue={(selectedOrder.lineItems.length ? selectedOrder.lineItems : [{
+                        quantity: selectedOrder.quantity,
+                        unit: selectedOrder.unit || "Unit",
+                        material: selectedOrder.material,
+                      }]).map((item) => `${item.quantity} ${item.unit} ${item.material}`).join("\n")}
+                      placeholder={"4 Bag Grass Seed\n2 Bag Fertilizer"}
+                    />
+                    <small className="muted">One item per line. Use “Qty Unit Material” or “Material | Qty | Unit”.</small>
                   </label>
                   <label>
                     Time

@@ -11,6 +11,7 @@ import {
 } from "../lib/dispatch.server";
 import { requireDispatchUser } from "../lib/auth.server";
 import { PermissionNav } from "../components/PermissionNav";
+import { useDispatchVersionRevalidator } from "../components/useDispatchVersionRevalidator";
 
 declare global {
   interface Window {
@@ -199,6 +200,7 @@ export default function DispatchMap() {
     loadMs: number;
   };
   const revalidator = useRevalidator();
+  useDispatchVersionRevalidator(revalidator, { intervalMs: 7000 });
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const renderersRef = useRef<any[]>([]);

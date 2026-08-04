@@ -349,6 +349,22 @@ h2 {
   color: #fde68a !important;
 }
 
+.deliveryWindowChip {
+  justify-self: start;
+  border: 1px solid rgba(232, 207, 157, 0.42);
+  border-radius: 999px;
+  background: rgba(120, 83, 30, 0.26);
+  color: #fdecc8 !important;
+  font-weight: 950;
+  padding: 4px 8px;
+}
+
+.deliveryWindowChip.missing {
+  border-color: rgba(56, 189, 248, 0.24);
+  background: rgba(8, 47, 73, 0.28);
+  color: #bae6fd !important;
+}
+
 .timingLayout {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1598,6 +1614,10 @@ h2 {
   gap: 16px;
 }
 
+.compactSettingsGrid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
 .settingsDashboard {
   display: grid;
   gap: 16px;
@@ -1609,6 +1629,26 @@ h2 {
   display: grid;
   gap: 18px;
   padding: 20px;
+}
+
+.dashedPanel {
+  border-style: dashed;
+}
+
+.inlineCheck {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.successNotice {
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #bbf7d0;
+}
+
+.errorNotice {
+  border-color: rgba(248, 113, 113, 0.35);
+  color: #fecaca;
 }
 
 .statusGrid,
@@ -2892,7 +2932,318 @@ h2 {
     position: static;
   }
 
-  .mapCanvas {
+.mapCanvas {
     min-height: 520px;
+  }
+}
+
+.productTitleLink {
+  color: inherit;
+  text-decoration-color: rgba(158, 210, 20, 0.75);
+  text-underline-offset: 3px;
+}
+
+.productTitleLink:hover {
+  color: #9ed214;
+}
+
+.materialCalculatorOpenButton {
+  appearance: none;
+  border: 1px solid rgba(158, 210, 20, 0.72);
+  border-radius: 999px;
+  background: linear-gradient(135deg, #9ed214, #16a34a);
+  color: #06100a;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  margin-left: auto;
+  padding: 0.72rem 1rem;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.materialCalculatorOpenButton:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+.materialCalculatorOverlay {
+  align-items: center;
+  background:
+    radial-gradient(circle at top left, rgba(158, 210, 20, 0.18), transparent 32rem),
+    rgba(0, 0, 0, 0.72);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 1.5rem;
+  position: fixed;
+  z-index: 200;
+}
+
+.materialCalculatorPanel {
+  background:
+    linear-gradient(145deg, rgba(7, 12, 10, 0.98), rgba(10, 16, 28, 0.98)),
+    #080b0a;
+  border: 1px solid rgba(158, 210, 20, 0.45);
+  border-radius: 28px;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55);
+  color: #f8fafc;
+  max-height: min(92vh, 980px);
+  max-width: 1120px;
+  overflow: auto;
+  padding: clamp(1rem, 2.4vw, 2rem);
+  width: min(100%, 1120px);
+}
+
+.materialCalculatorHeader {
+  align-items: start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.materialCalculatorHeader h2 {
+  color: #f6f0dc;
+  font-size: clamp(2rem, 4vw, 4rem);
+  line-height: 0.95;
+  margin: 0.1rem 0 0.35rem;
+}
+
+.materialCalculatorHeader p {
+  color: #c9d2bf;
+  margin: 0;
+}
+
+.materialCalculatorHeader a,
+.materialCalculatorMaterial a {
+  color: #9ed214;
+  font-weight: 900;
+  text-decoration-color: rgba(232, 207, 157, 0.8);
+  text-underline-offset: 3px;
+}
+
+.materialCalculatorEyebrow {
+  color: #e8cf9d !important;
+  font-size: 0.78rem;
+  font-weight: 950;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.materialCalculatorClose {
+  appearance: none;
+  background: #05070c;
+  border: 1px solid rgba(232, 207, 157, 0.45);
+  border-radius: 999px;
+  color: #f6f0dc;
+  cursor: pointer;
+  font-weight: 900;
+  padding: 0.72rem 1.1rem;
+}
+
+.materialCalculatorHero {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 1.25rem 0;
+}
+
+.materialCalculatorHero > div {
+  background: linear-gradient(135deg, rgba(158, 210, 20, 0.14), rgba(232, 207, 157, 0.08));
+  border: 1px solid rgba(158, 210, 20, 0.35);
+  border-radius: 20px;
+  padding: 1rem;
+}
+
+.materialCalculatorHero span,
+.materialCalculatorResult dt {
+  color: #a8b39d;
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.materialCalculatorHero strong,
+.materialCalculatorResult dd {
+  color: #f6f0dc;
+  font-size: 1.3rem;
+  font-weight: 950;
+}
+
+.materialCalculatorGrid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+}
+
+.materialCalculatorCard,
+.materialCalculatorConversions {
+  background: rgba(3, 7, 18, 0.75);
+  border: 1px solid rgba(232, 207, 157, 0.22);
+  border-radius: 22px;
+  padding: 1rem;
+}
+
+.materialCalculatorCard h3,
+.materialCalculatorConversions h3,
+.materialCalculatorCategory h4 {
+  color: #f6f0dc;
+  margin-top: 0;
+}
+
+.materialCalculatorShapeRow {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 1rem;
+}
+
+.materialCalculatorShapeRow button,
+.materialCalculatorApply {
+  appearance: none;
+  border: 1px solid rgba(232, 207, 157, 0.38);
+  border-radius: 16px;
+  background: #070b16;
+  color: #f6f0dc;
+  cursor: pointer;
+  font-weight: 900;
+  padding: 0.9rem 1rem;
+}
+
+.materialCalculatorShapeRow button.active,
+.materialCalculatorApply {
+  background: linear-gradient(135deg, #9ed214, #12a454);
+  border-color: rgba(158, 210, 20, 0.95);
+  color: #031006;
+}
+
+.materialCalculatorInputs {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.materialCalculatorInputs label,
+.materialCalculatorManual,
+.materialCalculatorRange {
+  color: #d5decc;
+  display: grid;
+  font-size: 0.78rem;
+  font-weight: 900;
+  gap: 0.35rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.materialCalculatorInputs input,
+.materialCalculatorInputs select,
+.materialCalculatorManual input {
+  background: #050813;
+  border: 1px solid rgba(232, 207, 157, 0.28);
+  border-radius: 14px;
+  color: #f8fafc;
+  font-size: 1rem;
+  padding: 0.82rem 0.9rem;
+}
+
+.materialCalculatorManual,
+.materialCalculatorRange {
+  margin-top: 1rem;
+}
+
+.materialCalculatorRange input {
+  accent-color: #9ed214;
+}
+
+.materialCalculatorResult dl {
+  display: grid;
+  gap: 0.85rem;
+  margin: 0 0 1rem;
+}
+
+.materialCalculatorResult div {
+  border-bottom: 1px solid rgba(232, 207, 157, 0.16);
+  padding-bottom: 0.7rem;
+}
+
+.materialCalculatorResult dd {
+  margin: 0.15rem 0 0;
+}
+
+.materialCalculatorApply {
+  width: 100%;
+}
+
+.materialCalculatorApply:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.6);
+  opacity: 0.55;
+}
+
+.materialCalculatorConversions {
+  margin-top: 1rem;
+}
+
+.materialCalculatorCategory {
+  margin-top: 1rem;
+}
+
+.materialCalculatorMaterialList {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.materialCalculatorMaterial {
+  align-items: center;
+  background: rgba(232, 207, 157, 0.06);
+  border: 1px solid rgba(232, 207, 157, 0.16);
+  border-radius: 14px;
+  display: flex;
+  gap: 0.8rem;
+  justify-content: space-between;
+  padding: 0.7rem 0.8rem;
+}
+
+.materialCalculatorMaterial.active {
+  background: rgba(158, 210, 20, 0.16);
+  border-color: rgba(158, 210, 20, 0.65);
+}
+
+.materialCalculatorMaterial span {
+  min-width: 0;
+}
+
+.materialCalculatorMaterial strong {
+  color: #e8cf9d;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .materialCalculatorOverlay {
+    align-items: stretch;
+    padding: 0.75rem;
+  }
+
+  .materialCalculatorHeader,
+  .materialCalculatorHero,
+  .materialCalculatorGrid,
+  .materialCalculatorShapeRow,
+  .materialCalculatorInputs {
+    grid-template-columns: 1fr;
+  }
+
+  .materialCalculatorHeader {
+    display: grid;
+  }
+
+  .materialCalculatorOpenButton {
+    margin-left: 0;
+    width: 100%;
   }
 }

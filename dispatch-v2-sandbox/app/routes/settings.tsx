@@ -11,10 +11,8 @@ import {
 import {
   getDefaultDispatchOperationalSettings,
   getDispatchSystemStatus,
-  loadDispatchEmployeeOptions,
   loadDispatchOperationalSettings,
   saveDispatchOperationalSettings,
-  type DispatchEmployeeOption,
   type DispatchOperationalSettings,
 } from "../lib/dispatch.server";
 import { PermissionNav } from "../components/PermissionNav";
@@ -30,10 +28,9 @@ function formBoolean(form: FormData, key: keyof DispatchOperationalSettings) {
 
 export async function loader({ request }: { request: Request }) {
   const currentUser = await requireDispatchUser(request, "settings");
-  const [users, authStatus, employees] = await Promise.all([
+  const [users, authStatus] = await Promise.all([
     listDispatchUsers(),
     getDispatchAuthSetupStatus(),
-    loadDispatchEmployeeOptions().catch(() => []),
   ]);
   let operations = getDefaultDispatchOperationalSettings();
   let settingsStorageError = "";
@@ -52,7 +49,6 @@ export async function loader({ request }: { request: Request }) {
     users,
     permissions: DISPATCH_PERMISSIONS,
     operations,
-    employees,
     settingsStorageError,
     authStatus,
     systemStatus: getDispatchSystemStatus(),
@@ -156,7 +152,6 @@ export async function action({ request }: { request: Request }) {
 
   const displayName = String(form.get("displayName") || "");
   const role = String(form.get("role") || "viewer");
-  const assignedEmployeeId = String(form.get("assignedEmployeeId") || "");
   const permissions = form.getAll("permissions").map(String);
   const isActive = String(form.get("isActive") || "") === "1";
 
@@ -164,14 +159,10 @@ export async function action({ request }: { request: Request }) {
     return data({ ok: false, message: "Missing user." }, { status: 400 });
   }
 
-  const employees = await loadDispatchEmployeeOptions().catch(() => []);
-  const assignedEmployee = employees.find((employee) => employee.id === assignedEmployeeId);
-  const savedDisplayName = role === "driver" && assignedEmployee ? assignedEmployee.name : displayName;
-
   const saved = await saveDispatchUserRole({
     userId,
     email,
-    displayName: savedDisplayName,
+    displayName,
     role,
     permissions,
     isActive,
@@ -185,20 +176,6 @@ function statusPill(label: string, ok: boolean) {
     <span className={ok ? "miniStatus ready" : "miniStatus missing"}>
       {label}: {ok ? "Ready" : "Missing"}
     </span>
-  );
-}
-
-function selectedEmployeeId(role: { displayName?: string; email?: string } | null, employees: DispatchEmployeeOption[]) {
-  if (!role) return "";
-  const displayName = String(role.displayName || "").trim().toLowerCase();
-  const email = String(role.email || "").trim().toLowerCase();
-  return (
-    employees.find((employee) => {
-      return (
-        employee.name.trim().toLowerCase() === displayName ||
-        employee.email.trim().toLowerCase() === email
-      );
-    })?.id || ""
   );
 }
 
@@ -221,7 +198,6 @@ export default function Settings() {
     users,
     permissions,
     operations,
-    employees,
     settingsStorageError,
     authStatus,
     systemStatus,
@@ -393,6 +369,7 @@ export default function Settings() {
             <Link to="/imports">Shopify Import</Link>
             <Link to="/routes">Routes</Link>
             <Link to="/trucks">Trucks</Link>
+            <Link to="/drivers">Drivers</Link>
             <Link to="/orders">Orders</Link>
             <Link to="/timing">Timing Learning</Link>
             <Link to="/audit">Audit Log</Link>
@@ -502,17 +479,9 @@ export default function Settings() {
                     <RoleOptions />
                   </select>
                 </label>
-                <label>
-                  Assigned driver employee
-                  <select name="assignedEmployeeId" defaultValue={selectedEmployeeId(role, employees)}>
-                    <option value="">Match by display name/email</option>
-                    {employees.map((employee) => (
-                      <option key={employee.id} value={employee.id}>
-                        {employee.name}{employee.role ? ` (${employee.role})` : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="helperText">
+                  Driver login links are managed on the <Link to="/drivers">Drivers</Link> page.
+                </div>
               </div>
               <div className="permissionGrid">
                 {permissions.map((permission) => (

@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { RealtimeClientOptions } from "@supabase/realtime-js";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
+import { getBestQuoteTaxRateForAddress } from "./quote-tax.server";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -47,6 +48,11 @@ const PUBLIC_APP_URL = (
   process.env.SHOPIFY_APP_URL ||
   "https://dispatch.winterwatch-pro.info"
 ).replace(/\/+$/, "");
+const DISPATCH_MANAGER_OVERRIDE_PASSWORD = (
+  process.env.DISPATCH_MANAGER_OVERRIDE_PASSWORD ||
+  process.env.MANAGER_OVERRIDE_PASSWORD ||
+  ""
+).trim();
 
 let cachedShopifyAccessToken = "";
 let cachedShopifyAccessTokenExpiresAt = 0;
@@ -133,6 +139,7 @@ const ORDER_LIST_COLUMNS = [
   "delivered_at",
   "proof_name",
   "proof_notes",
+  "checklist_json",
   "created_at",
   "updated_at",
 ].join(", ");
@@ -178,6 +185,8 @@ export type DispatchOrder = {
   material: string;
   quantity: string;
   unit: string;
+  lineItems: DispatchOrderLineItem[];
+  loadLabel: string;
   requestedWindow: string;
   timePreference: string;
   status: "new" | "scheduled" | "hold" | "delivered" | "cancelled";
@@ -196,6 +205,13 @@ export type DispatchOrder = {
   checklistJson: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type DispatchOrderLineItem = {
+  material: string;
+  quantity: string;
+  unit: string;
+  sku?: string;
 };
 
 export type DispatchRoute = {
@@ -240,8 +256,12 @@ export type DispatchEmployeeOption = {
   id: string;
   name: string;
   email: string;
+  phone: string;
   role: string;
+  userId: string;
+  userEmail: string;
   isActive: boolean;
+  notes: string;
 };
 
 export type DispatchAuditEvent = {
@@ -346,6 +366,7 @@ export type DispatchQuoteProduct = {
   sku: string;
   variantId: string;
   title: string;
+  handle?: string;
   vendor: string;
   imageUrl: string;
   unitLabel: string;
@@ -379,7 +400,11 @@ export type DispatchQuoteInput = {
   billingPostalCode?: string;
   billingCountry?: string;
   address1?: string;
+  address2?: string;
   city?: string;
+  province?: string;
+  postalCode?: string;
+  country?: string;
   notes?: string;
   customShippingLabel?: string;
   customShippingQuantity?: number | null;
@@ -391,6 +416,8 @@ export type DispatchQuoteResult = {
   pricingLabel: string;
   productTotal: number;
   deliveryTotal: number;
+  taxRate: number;
+  taxRateLabel: string;
   taxTotal: number;
   grandTotal: number;
   deliveryService: string;
@@ -534,6 +561,7 @@ export type CreateDispatchOrderInput = {
   material: string;
   quantity: string;
   unit: string;
+  lineItems?: DispatchOrderLineItem[];
   requestedWindow?: string;
   timePreference?: string;
   notes?: string;
@@ -559,6 +587,7 @@ export type UpdateDispatchOrderInput = {
   material: string;
   quantity: string;
   unit: string;
+  lineItems?: DispatchOrderLineItem[];
   requestedWindow?: string;
   timePreference?: string;
   status: DispatchOrder["status"];
@@ -588,11 +617,23 @@ export type DispatchTruckInput = {
   notes?: string;
 };
 
+export type DispatchEmployeeInput = {
+  name: string;
+  email?: string;
+  phone?: string;
+  role?: string;
+  userId?: string;
+  userEmail?: string;
+  isActive?: boolean;
+  notes?: string;
+};
+
 export type ShopifyImportResult = {
   ok: boolean;
   mode?: ShopifyImportMode;
   imported: number;
   updated: number;
+  removed?: number;
   skipped: number;
   distanceUpdated?: number;
   distanceSkipped?: number;
@@ -667,6 +708,7 @@ type ShopifyOrderNode = {
       sku?: string | null;
       vendor?: string | null;
       quantity?: number | null;
+      currentQuantity?: number | null;
       customAttributes?: Array<{ key?: string | null; value?: string | null }>;
       variant?: {
         id?: string | null;
@@ -735,7 +777,109 @@ function normalizeDeliveryStatus(value: unknown): DispatchOrder["deliveryStatus"
   return "not_started";
 }
 
+function normalizeDispatchLineItem(value: unknown): DispatchOrderLineItem | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const material = String(record.material || "").trim();
+  const quantity = String(record.quantity || "").trim();
+  const unit = String(record.unit || "Unit").trim() || "Unit";
+  const sku = String(record.sku || "").trim();
+  if (!material || !quantity) return null;
+  return {
+    material,
+    quantity,
+    unit,
+    ...(sku ? { sku } : {}),
+  };
+}
+
+function normalizeDispatchLineItems(value: unknown): DispatchOrderLineItem[] {
+  if (!value) return [];
+  const parsedValue = typeof value === "string" ? safeJsonParse(value) : value;
+  if (!Array.isArray(parsedValue)) return [];
+  return parsedValue
+    .map((item) => normalizeDispatchLineItem(item))
+    .filter((item): item is DispatchOrderLineItem => Boolean(item));
+}
+
+function fallbackDispatchLineItems(input: {
+  material?: string | null;
+  quantity?: string | number | null;
+  unit?: string | null;
+}): DispatchOrderLineItem[] {
+  const material = String(input.material || "").trim();
+  const quantity = String(input.quantity || "").trim();
+  const unit = String(input.unit || "Unit").trim() || "Unit";
+  if (!material || !quantity) return [];
+  return [{ material, quantity, unit }];
+}
+
+function orderLineItemsFromRow(row: any): DispatchOrderLineItem[] {
+  const checklist = parseChecklist(row.checklist_json);
+  const storedLineItems = normalizeDispatchLineItems(checklist.manualLineItems);
+  return storedLineItems.length ? storedLineItems : fallbackDispatchLineItems(row);
+}
+
+export function formatDispatchLoadLabel(lineItems: DispatchOrderLineItem[]) {
+  if (!lineItems.length) return "";
+  return lineItems
+    .map((item) => `${item.quantity} ${item.unit} ${item.material}`.trim())
+    .join(" + ");
+}
+
+function firstDispatchLineItem(lineItems: DispatchOrderLineItem[], fallback: DispatchOrderLineItem) {
+  return lineItems[0] || fallback;
+}
+
+export function parseDispatchLineItemsText(text: string, fallback: DispatchOrderLineItem): DispatchOrderLineItem[] {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return [fallback];
+
+  const items = lines
+    .map((line) => {
+      const pipeParts = line.split("|").map((part) => part.trim()).filter(Boolean);
+      if (pipeParts.length >= 3) {
+        const firstLooksLikeQty = /^\d+(?:\.\d+)?$/.test(pipeParts[0]);
+        return normalizeDispatchLineItem(
+          firstLooksLikeQty
+            ? { quantity: pipeParts[0], unit: pipeParts[1], material: pipeParts.slice(2).join(" | ") }
+            : { material: pipeParts[0], quantity: pipeParts[1], unit: pipeParts[2] },
+        );
+      }
+
+      const match = line.match(/^(\d+(?:\.\d+)?)\s+([A-Za-z]+)\s+(.+)$/);
+      if (match) {
+        return normalizeDispatchLineItem({
+          quantity: match[1],
+          unit: match[2],
+          material: match[3],
+        });
+      }
+
+      return normalizeDispatchLineItem({
+        material: line,
+        quantity: fallback.quantity,
+        unit: fallback.unit,
+      });
+    })
+    .filter((item): item is DispatchOrderLineItem => Boolean(item));
+
+  return items.length ? items : [fallback];
+}
+
 function normalizeOrder(row: any): DispatchOrder {
+  const lineItems = orderLineItemsFromRow(row);
+  const primaryLineItem = firstDispatchLineItem(
+    lineItems,
+    {
+      material: String(row.material || ""),
+      quantity: String(row.quantity || ""),
+      unit: String(row.unit || "Unit"),
+    },
+  );
   return {
     id: String(row.id),
     orderNumber: String(row.order_number || row.id),
@@ -743,9 +887,11 @@ function normalizeOrder(row: any): DispatchOrder {
     contact: String(row.contact || ""),
     address: String(row.address || ""),
     city: String(row.city || ""),
-    material: String(row.material || ""),
-    quantity: String(row.quantity || ""),
-    unit: String(row.unit || "Unit"),
+    material: primaryLineItem.material,
+    quantity: primaryLineItem.quantity,
+    unit: primaryLineItem.unit || "Unit",
+    lineItems,
+    loadLabel: formatDispatchLoadLabel(lineItems),
     requestedWindow: String(row.requested_window || ""),
     timePreference: String(row.time_preference || "Anytime"),
     status: normalizeStatus(row.status),
@@ -851,8 +997,12 @@ function normalizeEmployeeOption(row: any): DispatchEmployeeOption {
     id: String(row.id || ""),
     name: String(name || ""),
     email: String(row.email || ""),
+    phone: String(row.phone || row.mobile_phone || row.phone_number || ""),
     role: String(row.role || row.position || row.employee_role || ""),
+    userId: String(row.user_id || row.auth_user_id || ""),
+    userEmail: String(row.user_email || row.login_email || ""),
     isActive: row.is_active !== false && row.active !== false,
+    notes: String(row.notes || ""),
   };
 }
 
@@ -1161,6 +1311,30 @@ function updateChecklistValue(order: DispatchOrder, updates: Record<string, unkn
   };
 }
 
+function withDispatchEditedField(checklist: Record<string, unknown>, field: string, editedAt = new Date().toISOString()) {
+  const current = checklist.dispatchEditedFields && typeof checklist.dispatchEditedFields === "object"
+    ? checklist.dispatchEditedFields as Record<string, unknown>
+    : {};
+  return {
+    ...checklist,
+    dispatchEditedFields: {
+      ...current,
+      [field]: editedAt,
+    },
+  };
+}
+
+function hasDispatchEditedField(order: DispatchOrder, field: string) {
+  const checklist = parseChecklist(order.checklistJson);
+  const editedFields = checklist.dispatchEditedFields;
+  return Boolean(
+    editedFields &&
+      typeof editedFields === "object" &&
+      !Array.isArray(editedFields) &&
+      (editedFields as Record<string, unknown>)[field],
+  );
+}
+
 function timingKey(...parts: Array<string | null | undefined>) {
   return parts
     .map((part) => String(part || "").trim().toLowerCase())
@@ -1243,6 +1417,10 @@ function cleanOrderNumber(name: string) {
 function suffixForIndex(index: number, total: number) {
   if (total <= 1) return "";
   return String.fromCharCode(97 + index);
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function compactPhone(value?: string | null) {
@@ -1445,6 +1623,21 @@ function gpsProof(value?: string | null) {
 }
 
 function quantityColumns(order: DispatchOrder) {
+  const items = order.lineItems.length ? order.lineItems : fallbackDispatchLineItems(order);
+  if (items.length > 1) {
+    const totalFor = (pattern: RegExp) => {
+      const total = items
+        .filter((item) => pattern.test(item.unit.toLowerCase()))
+        .reduce((sum, item) => sum + numericValue(item.quantity), 0);
+      return total ? formatSplitQuantity(total) : "";
+    };
+    return {
+      tons: totalFor(/tons?/),
+      yards: totalFor(/yards?/),
+      bags: totalFor(/bags?/),
+      gallons: totalFor(/gallons?/),
+    };
+  }
   const unit = order.unit.toLowerCase();
   return {
     tons: /tons?/.test(unit) ? order.quantity : "",
@@ -1501,6 +1694,7 @@ function buildDeliveryConfirmationEmail(order: DispatchOrder, route: DispatchRou
   photoUrls: string;
 }) {
   const quantity = quantityColumns(order);
+  const loadLabel = order.loadLabel || `${order.quantity} ${order.unit} ${order.material}`.trim();
   const orderNumber = orderDisplayNumber(order);
   const deliveredAt = formatDeliveredAt(order);
   const driverName = input.proofName || route?.driver || order.proofName || "";
@@ -1526,9 +1720,7 @@ function buildDeliveryConfirmationEmail(order: DispatchOrder, route: DispatchRou
     `Address: ${address}`,
     `Contact: ${order.contact || ""}`,
     "",
-    `Material Type: ${order.unit}`,
-    `Product Ordered: ${order.material}`,
-    `Quantity: ${order.quantity} ${order.unit}`,
+    `Product Ordered: ${loadLabel}`,
     "",
     `Delivery Notes: ${input.proofNotes || ""}`,
     `Photo Proof: ${photoProof}`,
@@ -1586,8 +1778,8 @@ function buildDeliveryConfirmationEmail(order: DispatchOrder, route: DispatchRou
           ${deliveryTableHeader("Total Gallons Delivered")}
         </tr>
         <tr>
-          ${deliveryTableCell(order.unit)}
-          ${deliveryTableCell(order.material)}
+          ${deliveryTableCell(order.lineItems.length > 1 ? "Mixed" : order.unit)}
+          ${deliveryTableCell(loadLabel)}
           ${deliveryTableCell(quantity.tons)}
           ${deliveryTableCell(quantity.yards)}
           ${deliveryTableCell(quantity.bags)}
@@ -1684,6 +1876,59 @@ function uniqueStrings(values: Array<string | null | undefined>) {
       seen.add(value);
       return true;
     });
+}
+
+function textHasPositiveMatch(text: string, positive: RegExp, negative: RegExp) {
+  return positive.test(text) && !negative.test(text);
+}
+
+export function inferDispatchTimePreference(...values: Array<string | null | undefined>) {
+  const text = values
+    .map((value) => String(value || ""))
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!text) return "Anytime";
+
+  if (/\b(any\s*time|anytime|no\s+preference|whenever|flexible|open\s+schedule|doesnt\s+matter|does\s+not\s+matter)\b/i.test(text)) {
+    return "Anytime";
+  }
+
+  const notMorning = /\b(no|not|dont|do\s+not|cant|cannot|avoid)\s+(early\s+)?(am|a\.m\.|morning|first\s+thing)\b/i;
+  const notAfternoon = /\b(no|not|dont|do\s+not|cant|cannot|avoid)\s+(afternoon|after\s+lunch|pm|p\.m\.|midday|mid\s*day)\b/i;
+  const notEvening = /\b(no|not|dont|do\s+not|cant|cannot|avoid)\s+(evening|night|late|after\s+(4|5|6))\b/i;
+
+  const morning =
+    /\b(early\s+morning|morning|first\s+thing|as\s+early\s+as\s+possible|early\s+as\s+possible|early\s+am|am\s+delivery|a\.m\.|before\s+noon|before\s+lunch|breakfast|sunrise)\b|\b([5-9]|10|11)\s*:?\s*\d{0,2}\s*(am|a\.m\.)\b|\b([5-9]|10|11)\s*(am|a\.m\.)\b|\b(7|8|9|10|11)\s*-\s*(9|10|11|12)\b/i;
+  const afternoon =
+    /\b(afternoon|after\s+lunch|after\s+noon|midday|mid\s*day|noon|lunch\s*time|pm\s+delivery|p\.m\.)\b|\b(12|1|2|3|4)\s*:?\s*\d{0,2}\s*(pm|p\.m\.)\b|\b(12|1|2|3|4)\s*(pm|p\.m\.)\b|\b(12|1|2|3|4)\s*-\s*(2|3|4|5)\b/i;
+  const evening =
+    /\b(evening|tonight|night|after\s+work|end\s+of\s+day|end\s+of\s+the\s+day|late\s+day|late\s+afternoon|after\s+(4|5|6)\s*(pm|p\.m\.)?|after\s+(4|5|6)\b)\b|\b(5|6|7|8|9)\s*:?\s*\d{0,2}\s*(pm|p\.m\.)\b|\b(5|6|7|8|9)\s*(pm|p\.m\.)\b/i;
+
+  if (textHasPositiveMatch(text, evening, notEvening)) return "Evening";
+  if (textHasPositiveMatch(text, morning, notMorning)) return "Morning";
+  if (textHasPositiveMatch(text, afternoon, notAfternoon)) return "Afternoon";
+
+  return "Anytime";
+}
+
+function normalizeDispatchTimePreference(
+  value?: string | null,
+  ...fallbackText: Array<string | null | undefined>
+) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "morning") return "Morning";
+  if (normalized === "afternoon") return "Afternoon";
+  if (normalized === "evening") return "Evening";
+  if (normalized && normalized !== "anytime" && normalized !== "infer from notes") {
+    return inferDispatchTimePreference(value, ...fallbackText);
+  }
+
+  return inferDispatchTimePreference(...fallbackText);
 }
 
 function collectShopifyOrderNotes(order: ShopifyOrderNode) {
@@ -2006,6 +2251,13 @@ async function buildShopifyDispatchRow(order: ShopifyOrderNode, lineItem: Shopif
   const orderNotes = collectShopifyOrderNotes(order);
   const contact = [compactPhone(phone), email].filter(Boolean).join(" / ") || "No contact on Shopify";
   const unit = await resolveShopifyUnitLabel(lineItem, material);
+  const timePreference = normalizeDispatchTimePreference(
+    "",
+    preferredDelivery,
+    orderNotes.join(" "),
+    order.note,
+    order.customer?.note,
+  );
   const now = new Date().toISOString();
 
   return {
@@ -2019,10 +2271,10 @@ async function buildShopifyDispatchRow(order: ShopifyOrderNode, lineItem: Shopif
     address,
     city,
     material,
-    quantity: String(lineItem.quantity || 1),
+    quantity: String(shopifyLineItemDispatchQuantity(lineItem) || 1),
     unit,
     requested_window: preferredDelivery || "",
-    time_preference: "Anytime",
+    time_preference: timePreference,
     status: "new",
     delivery_status: "not_started",
     proof_notes: orderNotes.join("\n") || "",
@@ -2479,8 +2731,14 @@ async function filterRoutesForDriverScope(routes: DispatchRoute[], scope?: Dispa
       const employees = await loadDispatchEmployeeOptions();
       for (const employee of employees) {
         const employeeEmail = normalizedIdentity(employee.email);
+        const employeeUserEmail = normalizedIdentity(employee.userEmail);
         const employeeName = normalizedIdentity(employee.name);
-        if ((email && employeeEmail === email) || (displayName && employeeName === displayName)) {
+        if (
+          (scope.id && employee.userId === scope.id) ||
+          (email && employeeUserEmail === email) ||
+          (email && employeeEmail === email) ||
+          (displayName && employeeName === displayName)
+        ) {
           employeeIds.add(employee.id);
           employeeNames.add(employeeName);
         }
@@ -3143,6 +3401,133 @@ export async function loadDispatchEmployeeOptions(limit = 250) {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+export async function loadDispatchDriversForManagement(limit = 500) {
+  const { data, error } = await supabase
+    .from("dispatch_employees")
+    .select("*")
+    .limit(limit);
+
+  if (error) {
+    if (isMissingTableError(error)) return [];
+    throw new Error(formatSupabaseError(error));
+  }
+
+  return (data || [])
+    .map(normalizeEmployeeOption)
+    .filter((employee) => employee.id && employee.name)
+    .sort((left, right) => {
+      if (left.isActive !== right.isActive) return left.isActive ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    });
+}
+
+function normalizeEmployeeInput(input: DispatchEmployeeInput) {
+  const name = input.name.trim();
+  if (!name) throw new Error("Driver name is required.");
+
+  return {
+    name,
+    email: input.email?.trim().toLowerCase() || null,
+    phone: input.phone?.trim() || null,
+    role: input.role?.trim() || "Driver",
+    user_id: input.userId?.trim() || null,
+    user_email: input.userEmail?.trim().toLowerCase() || null,
+    is_active: input.isActive !== false,
+    notes: input.notes?.trim() || null,
+  };
+}
+
+export async function createDispatchDriver(input: DispatchEmployeeInput, actor = "dispatcher") {
+  const now = new Date().toISOString();
+  const row = normalizeEmployeeInput(input);
+  const { data, error } = await supabase
+    .from("dispatch_employees")
+    .insert({
+      id: makeDispatchId("E"),
+      ...row,
+      created_at: now,
+      updated_at: now,
+    })
+    .select("*")
+    .single();
+
+  if (error) throw new Error(formatSupabaseError(error));
+  const driver = normalizeEmployeeOption(data);
+  await writeAuditLog({
+    action: "create_driver",
+    actor,
+    message: `Created driver ${driver.name}.`,
+    after: driver,
+  });
+  return driver;
+}
+
+export async function updateDispatchDriver(
+  driverId: string,
+  input: DispatchEmployeeInput,
+  actor = "dispatcher",
+) {
+  const { data: beforeData, error: beforeError } = await supabase
+    .from("dispatch_employees")
+    .select("*")
+    .eq("id", driverId)
+    .maybeSingle();
+
+  if (beforeError && !isMissingTableError(beforeError)) throw new Error(formatSupabaseError(beforeError));
+  const row = normalizeEmployeeInput(input);
+  const { data, error } = await supabase
+    .from("dispatch_employees")
+    .update({
+      ...row,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", driverId)
+    .select("*")
+    .single();
+
+  if (error) throw new Error(formatSupabaseError(error));
+  const driver = normalizeEmployeeOption(data);
+  await writeAuditLog({
+    action: "update_driver",
+    actor,
+    message: `Updated driver ${driver.name}.`,
+    before: beforeData ? normalizeEmployeeOption(beforeData) : null,
+    after: driver,
+  });
+  return driver;
+}
+
+export async function deactivateDispatchDriver(driverId: string, actor = "dispatcher") {
+  const { data: beforeData, error: beforeError } = await supabase
+    .from("dispatch_employees")
+    .select("*")
+    .eq("id", driverId)
+    .single();
+
+  if (beforeError) throw new Error(formatSupabaseError(beforeError));
+  const before = normalizeEmployeeOption(beforeData);
+  const { data, error } = await supabase
+    .from("dispatch_employees")
+    .update({
+      is_active: false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", driverId)
+    .select("*")
+    .single();
+
+  if (error) throw new Error(formatSupabaseError(error));
+  const driver = normalizeEmployeeOption(data);
+  await writeAuditLog({
+    action: "deactivate_driver",
+    actor,
+    message: `Deactivated driver ${driver.name}.`,
+    before,
+    after: driver,
+  });
+  return driver;
+}
+
 export function getMapsConfigStatus() {
   return {
     configured: Boolean(GOOGLE_MAPS_API_KEY),
@@ -3477,6 +3862,7 @@ export async function loadDispatchQuoteProducts(): Promise<DispatchQuoteProduct[
       sku: String(row.sku || ""),
       variantId: String(row.variant_id || ""),
       title: cleanShopifyMaterialName(String(row.product_title || row.sku || "")),
+      handle: String(row.product_handle || row.shopify_product_handle || row.handle || row.product_slug || ""),
       vendor: cleanShopifyMaterialName(String(row.pickup_vendor || "")),
       imageUrl: String(row.image_url || ""),
       unitLabel: normalizeQuoteUnitLabel(String(row.unit_label || row.price_unit_label || "")),
@@ -3818,7 +4204,17 @@ export async function calculateDispatchQuote(input: DispatchQuoteInput): Promise
     }
   }
 
-  const taxTotal = input.taxExempt ? 0 : Math.round(productTotal * 0.055 * 100) / 100;
+  const taxRateMatch = input.taxExempt
+    ? { rate: 0, label: "Tax exempt", matchedRule: false }
+    : await getBestQuoteTaxRateForAddress({
+        address1: input.address1,
+        address2: input.address2,
+        city: input.city,
+        province: input.province,
+        postalCode: input.postalCode,
+        country: input.country,
+      });
+  const taxTotal = Math.round(productTotal * taxRateMatch.rate * 100) / 100;
   const grandTotal = productTotal + deliveryTotal + taxTotal;
   const sourceByVendor = new Map<string, { vendor: string; quantity: number; items: string[] }>();
 
@@ -3834,6 +4230,8 @@ export async function calculateDispatchQuote(input: DispatchQuoteInput): Promise
     pricingLabel: quotePricingLabel(audience, contractorTier),
     productTotal,
     deliveryTotal,
+    taxRate: taxRateMatch.rate,
+    taxRateLabel: taxRateMatch.label,
     taxTotal,
     grandTotal,
     deliveryService,
@@ -3940,6 +4338,12 @@ export async function shopifyGraphql<T>(query: string, variables: Record<string,
   return body.data as T;
 }
 
+function poundsToGrams(value: unknown) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) return undefined;
+  return numericValue * 453.59237;
+}
+
 export async function syncShopifyProductSourceMap(limit = 500): Promise<ShopifyImportResult> {
   const details: string[] = [];
   const rows: Array<{
@@ -3949,6 +4353,7 @@ export async function syncShopifyProductSourceMap(limit = 500): Promise<ShopifyI
     pickup_vendor: string;
     image_url: string | null;
     unit_label: string | null;
+    weight_grams: number | null;
     price: number | null;
     updated_at: string;
   }> = [];
@@ -3965,16 +4370,17 @@ export async function syncShopifyProductSourceMap(limit = 500): Promise<ShopifyI
           featuredImage?: { url?: string | null } | null;
           unitLabel?: { value?: string | null } | null;
           legacyUnitLabel?: { value?: string | null } | null;
-          variants?: {
-            nodes?: Array<{
-              id?: string | null;
-              sku?: string | null;
-              title?: string | null;
-              price?: string | number | null;
-              image?: { url?: string | null } | null;
+              variants?: {
+                nodes?: Array<{
+                  id?: string | null;
+                  sku?: string | null;
+                  title?: string | null;
+                  price?: string | number | null;
+                  image?: { url?: string | null } | null;
+                  palletWeight?: { value?: string | null } | null;
+                }>;
+              };
             }>;
-          };
-        }>;
       };
     }>(
       `
@@ -4005,6 +4411,9 @@ export async function syncShopifyProductSourceMap(limit = 500): Promise<ShopifyI
                   image {
                     url
                   }
+                  palletWeight: metafield(namespace: "custom", key: "pallet_weight_lbs") {
+                    value
+                  }
                 }
               }
             }
@@ -4034,6 +4443,7 @@ export async function syncShopifyProductSourceMap(limit = 500): Promise<ShopifyI
           pickup_vendor: vendor,
           image_url: variant.image?.url || imageUrl,
           unit_label: unitLabel,
+          weight_grams: poundsToGrams(variant.palletWeight?.value) ?? null,
           price:
             variant.price === null || variant.price === undefined || variant.price === ""
               ? null
@@ -4049,14 +4459,26 @@ export async function syncShopifyProductSourceMap(limit = 500): Promise<ShopifyI
   const uniqueRows = Array.from(new Map(rows.slice(0, limit).map((row) => [row.sku, row])).values());
   for (let index = 0; index < uniqueRows.length; index += 100) {
     const chunk = uniqueRows.slice(index, index + 100);
-    const { error } = await supabase
+    let { error } = await supabase
       .from("product_source_map")
       .upsert(chunk, { onConflict: "sku" });
+
+    if (error?.code === "PGRST204" || error?.code === "42703" || /weight_grams/i.test(error?.message || "")) {
+      const legacyChunk = chunk.map(({ weight_grams, ...row }) => row);
+      const legacyResult = await supabase
+        .from("product_source_map")
+        .upsert(legacyChunk, { onConflict: "sku" });
+      error = legacyResult.error;
+    }
+
     if (error) throw new Error(formatSupabaseError(error));
   }
 
   details.push(`Scanned ${productCount} Shopify products.`);
   details.push(`Synced ${uniqueRows.length} SKU rows into product_source_map.`);
+  details.push(
+    `Synced ${uniqueRows.filter((row) => Number(row.weight_grams || 0) > 0).length} custom.pallet_weight_lbs values.`,
+  );
   details.push(
     `Sample names: ${uniqueRows
       .slice(0, 20)
@@ -4576,6 +4998,7 @@ async function fetchShopifyOrderBatch(limit: number, query: string, sortKey: "CR
                     sku
                     vendor
                     quantity
+                    currentQuantity
                     customAttributes {
                       key
                       value
@@ -4637,6 +5060,12 @@ function shopifyLineItemKey(order: ShopifyOrderNode, lineItem: ShopifyLineItem, 
   return `shopify:${order.id}#${lineItem.id || lineItem.variant?.id || lineItem.sku || lineItem.title || lineItem.name || index}`;
 }
 
+function shopifyLineItemDispatchQuantity(lineItem: ShopifyLineItem) {
+  const currentQuantity = Number(lineItem.currentQuantity);
+  if (Number.isFinite(currentQuantity)) return currentQuantity;
+  return Number(lineItem.quantity || 0);
+}
+
 function shouldSkipShopifyLineItem(lineItem: ShopifyLineItem) {
   const text = [lineItem.title, lineItem.name, lineItem.variant?.product?.title]
     .filter(Boolean)
@@ -4673,16 +5102,10 @@ async function fetchShopifyOrders(limit: number, sinceDays: number, mode: Shopif
     latestOrders,
     updatedOrders,
     broadUpdatedOrders,
-  ] = mode === "new"
-    ? [
-        ...(await Promise.all(createdBatchPromises)),
-        [] as ShopifyOrderNode[],
-        [] as ShopifyOrderNode[],
-      ]
-    : [
-        ...(await Promise.all(createdBatchPromises)),
-        ...(await Promise.all(updateBatchPromises)),
-      ];
+  ] = await Promise.all([
+    ...createdBatchPromises,
+    ...updateBatchPromises,
+  ]);
 
   const byId = new Map<string, ShopifyOrderNode>();
   for (const order of [
@@ -4828,6 +5251,192 @@ async function findExistingShopifyDispatchOrder(
   return match ? normalizeOrder(match) : null;
 }
 
+function findShopifyLineReplacementDispatchOrder(
+  existingOrders: DispatchOrder[],
+  input: {
+    orderNumber: string;
+    baseOrderNumber: string;
+    index: number;
+    total: number;
+    usedOrderIds: Set<string>;
+  },
+) {
+  const activeOrders = existingOrders
+    .filter((order) => !input.usedOrderIds.has(order.id))
+    .filter((order) => order.status !== "delivered" && order.deliveryStatus !== "delivered" && order.status !== "cancelled")
+    .sort((left, right) => {
+      const leftAssignedPriority = left.assignedRouteId ? 0 : 1;
+      const rightAssignedPriority = right.assignedRouteId ? 0 : 1;
+      if (leftAssignedPriority !== rightAssignedPriority) return leftAssignedPriority - rightAssignedPriority;
+
+      const statusPriority = (order: DispatchOrder) => order.status === "scheduled" ? 0 : order.status === "hold" ? 1 : 2;
+      const leftStatusPriority = statusPriority(left);
+      const rightStatusPriority = statusPriority(right);
+      if (leftStatusPriority !== rightStatusPriority) return leftStatusPriority - rightStatusPriority;
+
+      const leftCreated = Date.parse(left.createdAt || "") || 0;
+      const rightCreated = Date.parse(right.createdAt || "") || 0;
+      if (leftCreated !== rightCreated) return leftCreated - rightCreated;
+
+      return cleanOrderNumber(left.orderNumber).localeCompare(cleanOrderNumber(right.orderNumber), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+
+  const exactOrderNumber = activeOrders.find(
+    (order) => cleanOrderNumber(order.orderNumber).toLowerCase() === cleanOrderNumber(input.orderNumber).toLowerCase(),
+  );
+  if (exactOrderNumber) return exactOrderNumber;
+
+  if (activeOrders.length === 1) return activeOrders[0];
+
+  const expectedSuffix = suffixForIndex(input.index, input.total);
+  if (expectedSuffix) {
+    const suffixMatch = activeOrders.find((order) => {
+      const normalizedOrderNumber = cleanOrderNumber(order.orderNumber).toLowerCase();
+      return normalizedOrderNumber === `${cleanOrderNumber(input.baseOrderNumber).toLowerCase()}${expectedSuffix}`;
+    });
+    if (suffixMatch) return suffixMatch;
+  }
+
+  return activeOrders[input.index] || null;
+}
+
+function shopifyRemovalReason(order: ShopifyOrderNode) {
+  const financialStatus = String(order.displayFinancialStatus || "").toUpperCase();
+  if (order.cancelledAt) return `Shopify cancelled at ${order.cancelledAt}.`;
+  if (financialStatus === "REFUNDED" || financialStatus === "VOIDED") {
+    return `Shopify financial status is ${financialStatus}.`;
+  }
+  return "";
+}
+
+function orderNumberBelongsToShopifyBase(orderNumber: string, baseOrderNumber: string) {
+  const normalizedOrderNumber = cleanOrderNumber(orderNumber).toLowerCase();
+  const normalizedBase = cleanOrderNumber(baseOrderNumber).toLowerCase();
+  if (!normalizedOrderNumber || !normalizedBase) return false;
+  if (normalizedOrderNumber === normalizedBase) return true;
+  return new RegExp(`^${escapeRegExp(normalizedBase)}[a-z]+$`, "i").test(normalizedOrderNumber);
+}
+
+function dispatchRowMatchesShopifyOrder(row: any, order: ShopifyOrderNode) {
+  const checklist = parseChecklist(row.checklist_json);
+  const baseOrderNumber = cleanOrderNumber(order.name);
+  return Boolean(
+    orderNumberBelongsToShopifyBase(row.order_number, baseOrderNumber) ||
+      (order.id && String(checklist.shopifyOrderId || "") === order.id) ||
+      (order.name && String(checklist.shopifyOrderName || "") === order.name) ||
+      (order.legacyResourceId &&
+        String(checklist.shopifyLegacyResourceId || "") === order.legacyResourceId),
+  );
+}
+
+async function findExistingShopifyDispatchOrdersForOrder(order: ShopifyOrderNode) {
+  const baseOrderNumber = cleanOrderNumber(order.name);
+  const filters = [
+    baseOrderNumber ? `order_number.eq.${baseOrderNumber}` : "",
+    baseOrderNumber ? `order_number.ilike.${baseOrderNumber}%` : "",
+    order.id ? `checklist_json.ilike.%${order.id}%` : "",
+    order.name ? `checklist_json.ilike.%${order.name}%` : "",
+    order.legacyResourceId ? `checklist_json.ilike.%${order.legacyResourceId}%` : "",
+  ].filter(Boolean);
+
+  if (!filters.length) return [];
+
+  const { data, error } = await supabase
+    .from("dispatch_orders")
+    .select(ORDER_COLUMNS)
+    .or(filters.join(","))
+    .limit(250);
+
+  if (error) throw new Error(formatSupabaseError(error));
+
+  return (data || [])
+    .filter((row) => dispatchRowMatchesShopifyOrder(row, order))
+    .map(normalizeOrder);
+}
+
+async function removeExistingShopifyDispatchOrdersForOrder(order: ShopifyOrderNode, reason: string) {
+  const existingOrders = await findExistingShopifyDispatchOrdersForOrder(order);
+  if (!existingOrders.length) return 0;
+
+  const ids = existingOrders.map((entry) => entry.id);
+  const previousRouteIds = Array.from(
+    new Set(existingOrders.map((entry) => entry.assignedRouteId).filter(Boolean) as string[]),
+  );
+  const { error } = await supabase
+    .from("dispatch_orders")
+    .delete()
+    .in("id", ids);
+
+  if (error) throw new Error(formatSupabaseError(error));
+
+  await resequenceRoutes(previousRouteIds);
+  for (const removedOrder of existingOrders) {
+    await writeAuditLog({
+      action: "shopify_remove_order",
+      actor: "shopify-import",
+      orderId: removedOrder.id,
+      routeId: removedOrder.assignedRouteId,
+      message: `Removed ${removedOrder.orderNumber} from dispatch because ${reason}`,
+      before: removedOrder,
+      after: {
+        removed: true,
+        shopifyOrderId: order.id,
+        shopifyOrderName: order.name,
+        shopifyFinancialStatus: order.displayFinancialStatus || null,
+        shopifyCancelledAt: order.cancelledAt || null,
+      },
+    });
+  }
+
+  return existingOrders.length;
+}
+
+async function removeStaleShopifyDispatchOrdersForOrder(
+  order: ShopifyOrderNode,
+  staleOrders: DispatchOrder[],
+  reason: string,
+) {
+  const removableOrders = staleOrders.filter(
+    (entry) => entry.status !== "delivered" && entry.deliveryStatus !== "delivered" && entry.status !== "cancelled",
+  );
+  if (!removableOrders.length) return 0;
+
+  const ids = removableOrders.map((entry) => entry.id);
+  const previousRouteIds = Array.from(
+    new Set(removableOrders.map((entry) => entry.assignedRouteId).filter(Boolean) as string[]),
+  );
+  const { error } = await supabase
+    .from("dispatch_orders")
+    .delete()
+    .in("id", ids);
+
+  if (error) throw new Error(formatSupabaseError(error));
+
+  await resequenceRoutes(previousRouteIds);
+  for (const staleOrder of removableOrders) {
+    await writeAuditLog({
+      action: "shopify_remove_duplicate_order",
+      actor: "shopify-import",
+      orderId: staleOrder.id,
+      routeId: staleOrder.assignedRouteId,
+      message: `Removed stale duplicate ${staleOrder.orderNumber} from dispatch because ${reason}`,
+      before: staleOrder,
+      after: {
+        removed: true,
+        staleDuplicate: true,
+        shopifyOrderId: order.id,
+        shopifyOrderName: order.name,
+        reason,
+      },
+    });
+  }
+
+  return removableOrders.length;
+}
+
 export async function importRecentShopifyOrders(
   input: {
     limit?: number;
@@ -4847,6 +5456,7 @@ export async function importRecentShopifyOrders(
   const distanceCandidates: string[] = [];
   let imported = 0;
   let updated = 0;
+  let removed = 0;
   let skipped = 0;
   let distanceUpdated = 0;
   let distanceSkipped = 0;
@@ -4866,9 +5476,21 @@ export async function importRecentShopifyOrders(
   }
 
   for (const shopifyOrder of shopifyOrders) {
-    if (shopifyOrder.cancelledAt) {
-      skipped += 1;
-      details.push(`${shopifyOrder.name}: skipped because Shopify says cancelled.`);
+    const removalReason = shopifyRemovalReason(shopifyOrder);
+    if (removalReason) {
+      try {
+        const removedCount = await removeExistingShopifyDispatchOrdersForOrder(shopifyOrder, removalReason);
+        removed += removedCount;
+        if (removedCount > 0) {
+          details.push(`${shopifyOrder.name}: removed ${removedCount} dispatch ticket${removedCount === 1 ? "" : "s"} because ${removalReason}`);
+        } else {
+          skipped += 1;
+          details.push(`${shopifyOrder.name}: no matching dispatch tickets to remove even though ${removalReason}`);
+        }
+      } catch (error) {
+        skipped += 1;
+        details.push(`${shopifyOrder.name}: removal skipped - ${error instanceof Error ? error.message : "unknown removal error"}`);
+      }
       continue;
     }
 
@@ -4886,7 +5508,7 @@ export async function importRecentShopifyOrders(
 
     const allLineItems = shopifyOrder.lineItems?.nodes?.filter((lineItem) => lineItem?.name || lineItem?.title) || [];
     const lineItems = allLineItems.filter(
-      (lineItem) => !shouldSkipShopifyLineItem(lineItem) && Number(lineItem.quantity || 0) > 0,
+      (lineItem) => !shouldSkipShopifyLineItem(lineItem) && shopifyLineItemDispatchQuantity(lineItem) > 0,
     );
     if (!lineItems.length) {
       skipped += 1;
@@ -4895,6 +5517,8 @@ export async function importRecentShopifyOrders(
     }
 
     const baseOrderNumber = cleanOrderNumber(shopifyOrder.name);
+    const existingShopifyDispatchOrders = await findExistingShopifyDispatchOrdersForOrder(shopifyOrder);
+    const usedExistingOrderIds = new Set<string>();
 
     for (const [index, lineItem] of lineItems.entries()) {
       const orderNumber = `${baseOrderNumber}${suffixForIndex(index, lineItems.length)}`;
@@ -4902,7 +5526,7 @@ export async function importRecentShopifyOrders(
       try {
         const resolvedMaterial = await resolveShopifyMaterialName(lineItem);
         const material = resolvedMaterial.material;
-        const existingOrder = await findExistingShopifyDispatchOrder(orderNumber, {
+        const exactExistingOrder = await findExistingShopifyDispatchOrder(orderNumber, {
           orderId: shopifyOrder.id,
           orderName: shopifyOrder.name,
           legacyResourceId: shopifyOrder.legacyResourceId || "",
@@ -4912,6 +5536,17 @@ export async function importRecentShopifyOrders(
           sku: lineItem.sku || lineItem.variant?.sku || "",
           material,
         });
+        const replacementExistingOrder = findShopifyLineReplacementDispatchOrder(
+          existingShopifyDispatchOrders,
+          {
+            orderNumber,
+            baseOrderNumber,
+            index,
+            total: lineItems.length,
+            usedOrderIds: usedExistingOrderIds,
+          },
+        );
+        const existingOrder = replacementExistingOrder || exactExistingOrder;
 
         if (
           existingOrder?.status === "delivered" ||
@@ -4926,12 +5561,6 @@ export async function importRecentShopifyOrders(
         const row = await buildShopifyDispatchRow(shopifyOrder, lineItem, orderNumber, importKey);
 
         if (existingOrder) {
-          if (importOnly) {
-            skipped += 1;
-            details.push(`${orderNumber}: skipped because it already exists in dispatch.`);
-            continue;
-          }
-
           const existingNormalizedUnit = normalizeDispatchUnitLabel(existingOrder.unit);
           const rowNormalizedUnit = normalizeDispatchUnitLabel(row.unit);
           const nextUnit =
@@ -4944,6 +5573,10 @@ export async function importRecentShopifyOrders(
             ...nextShopifyChecklist,
             importedFrom: "shopify",
           };
+          const preserveDispatchDate = hasDispatchEditedField(existingOrder, "requestedWindow");
+          const nextRequestedWindow = preserveDispatchDate
+            ? existingOrder.requestedWindow || null
+            : row.requested_window || existingOrder.requestedWindow || null;
           const { data, error } = await supabase
             .from("dispatch_orders")
             .update({
@@ -4954,7 +5587,7 @@ export async function importRecentShopifyOrders(
               material: row.material,
               quantity: row.quantity,
               unit: nextUnit,
-              requested_window: row.requested_window,
+              requested_window: nextRequestedWindow,
               time_preference: row.time_preference,
               proof_notes: row.proof_notes,
               checklist_json: JSON.stringify(mergedChecklist),
@@ -4979,12 +5612,26 @@ export async function importRecentShopifyOrders(
           if (!updatedOrder.travelMinutes || !updatedOrder.travelMiles) {
             distanceCandidates.push(updatedOrder.id);
           }
+          usedExistingOrderIds.add(existingOrder.id);
+          if (!exactExistingOrder) {
+            details.push(
+              `${orderNumber}: updated existing dispatch ticket ${existingOrder.orderNumber} after Shopify line item changed to ${row.material}.`,
+            );
+          }
           continue;
         }
 
         if (updateOnly) {
           skipped += 1;
           details.push(`${orderNumber}: skipped because it is not in dispatch yet.`);
+          continue;
+        }
+
+        if (existingShopifyDispatchOrders.length >= lineItems.length) {
+          skipped += 1;
+          details.push(
+            `${orderNumber}: skipped creating a duplicate because ${shopifyOrder.name} already has ${existingShopifyDispatchOrders.length} dispatch ticket${existingShopifyDispatchOrders.length === 1 ? "" : "s"}.`,
+          );
           continue;
         }
 
@@ -5008,6 +5655,26 @@ export async function importRecentShopifyOrders(
       } catch (error) {
         skipped += 1;
         details.push(`${orderNumber}: skipped - ${error instanceof Error ? error.message : "unknown import error"}`);
+      }
+    }
+
+    const staleDuplicateOrders = existingShopifyDispatchOrders.filter(
+      (order) => !usedExistingOrderIds.has(order.id),
+    );
+    if (usedExistingOrderIds.size > 0 && staleDuplicateOrders.length && existingShopifyDispatchOrders.length > lineItems.length) {
+      try {
+        const removedDuplicates = await removeStaleShopifyDispatchOrdersForOrder(
+          shopifyOrder,
+          staleDuplicateOrders,
+          `${shopifyOrder.name} now has ${lineItems.length} active Shopify product line${lineItems.length === 1 ? "" : "s"}.`,
+        );
+        removed += removedDuplicates;
+        if (removedDuplicates > 0) {
+          details.push(`${shopifyOrder.name}: removed ${removedDuplicates} stale duplicate dispatch ticket${removedDuplicates === 1 ? "" : "s"}.`);
+        }
+      } catch (error) {
+        skipped += 1;
+        details.push(`${shopifyOrder.name}: duplicate cleanup skipped - ${error instanceof Error ? error.message : "unknown cleanup error"}`);
       }
     }
   }
@@ -5035,7 +5702,7 @@ export async function importRecentShopifyOrders(
     : "";
   const modeLabel =
     mode === "new" ? "new order import" : mode === "updates" ? "order update" : "Shopify import";
-  const message = `Shopify ${modeLabel} complete: ${imported} imported, ${updated} updated, ${skipped} skipped from ${shopifyOrders.length} orders fetched.${distanceMessage}`;
+  const message = `Shopify ${modeLabel} complete: ${imported} imported, ${updated} updated, ${removed} removed, ${skipped} skipped from ${shopifyOrders.length} orders fetched.${distanceMessage}`;
   await writeAuditLog({
     action: "shopify_import_complete",
     actor: "shopify-import",
@@ -5043,6 +5710,7 @@ export async function importRecentShopifyOrders(
     after: {
       imported,
       updated,
+      removed,
       skipped,
       distanceUpdated,
       distanceSkipped,
@@ -5053,13 +5721,28 @@ export async function importRecentShopifyOrders(
     },
   });
 
-  return { ok: true, mode, imported, updated, skipped, distanceUpdated, distanceSkipped, message, details };
+  return { ok: true, mode, imported, updated, removed, skipped, distanceUpdated, distanceSkipped, message, details };
 }
 
 export async function createDispatchOrder(input: CreateDispatchOrderInput) {
   const now = new Date().toISOString();
   const orderId = makeDispatchId("D");
   const orderNumber = input.orderNumber?.trim() || makeManualOrderNumber();
+  const fallbackLineItem = {
+    material: input.material.trim(),
+    quantity: input.quantity.trim(),
+    unit: input.unit.trim() || "Unit",
+  };
+  const lineItems = normalizeDispatchLineItems(input.lineItems).length
+    ? normalizeDispatchLineItems(input.lineItems)
+    : [fallbackLineItem];
+  const primaryLineItem = firstDispatchLineItem(lineItems, fallbackLineItem);
+  const checklist = lineItems.length > 1 ? { manualLineItems: lineItems } : {};
+  const timePreference = normalizeDispatchTimePreference(
+    input.timePreference,
+    input.notes,
+    input.requestedWindow,
+  );
   const { data, error } = await supabase
     .from("dispatch_orders")
     .insert({
@@ -5070,12 +5753,13 @@ export async function createDispatchOrder(input: CreateDispatchOrderInput) {
       contact: input.contact?.trim() || null,
       address: input.address.trim(),
       city: input.city.trim(),
-      material: input.material.trim(),
-      quantity: input.quantity.trim(),
-      unit: input.unit.trim() || "Unit",
+      material: primaryLineItem.material,
+      quantity: primaryLineItem.quantity,
+      unit: primaryLineItem.unit || "Unit",
       requested_window: input.requestedWindow?.trim() || null,
-      time_preference: input.timePreference?.trim() || "Anytime",
+      time_preference: timePreference,
       proof_notes: input.notes?.trim() || null,
+      checklist_json: Object.keys(checklist).length ? JSON.stringify(checklist) : null,
       status: "new",
       delivery_status: "not_started",
       created_at: now,
@@ -5152,6 +5836,32 @@ export async function updateDispatchOrder(orderId: string, input: UpdateDispatch
         : before.deliveryStatus === "delivered"
           ? "not_started"
           : before.deliveryStatus;
+  const requestedWindow = input.requestedWindow?.trim() || null;
+  const nextProofNotes = input.notes === undefined ? before.proofNotes : input.notes.trim() || null;
+  const fallbackLineItem = {
+    material: input.material.trim(),
+    quantity: input.quantity.trim(),
+    unit: input.unit.trim() || "Unit",
+  };
+  const lineItems = normalizeDispatchLineItems(input.lineItems).length
+    ? normalizeDispatchLineItems(input.lineItems)
+    : [fallbackLineItem];
+  const primaryLineItem = firstDispatchLineItem(lineItems, fallbackLineItem);
+  const timePreference = normalizeDispatchTimePreference(
+    input.timePreference,
+    nextProofNotes,
+    requestedWindow,
+  );
+  const checklist = requestedWindow !== (before.requestedWindow || null)
+    ? withDispatchEditedField(parseChecklist(before.checklistJson), "requestedWindow", now)
+    : parseChecklist(before.checklistJson);
+  const nextChecklist = {
+    ...checklist,
+    ...(lineItems.length > 1 ? { manualLineItems: lineItems } : { manualLineItems: undefined }),
+  };
+  if (lineItems.length <= 1) {
+    delete nextChecklist.manualLineItems;
+  }
 
   const { data, error } = await supabase
     .from("dispatch_orders")
@@ -5161,14 +5871,15 @@ export async function updateDispatchOrder(orderId: string, input: UpdateDispatch
       contact: input.contact?.trim() || null,
       address: input.address.trim(),
       city: input.city.trim(),
-      material: input.material.trim(),
-      quantity: input.quantity.trim(),
-      unit: input.unit.trim() || "Unit",
-      requested_window: input.requestedWindow?.trim() || null,
-      time_preference: input.timePreference?.trim() || "Anytime",
+      material: primaryLineItem.material,
+      quantity: primaryLineItem.quantity,
+      unit: primaryLineItem.unit || "Unit",
+      requested_window: requestedWindow,
+      time_preference: timePreference,
       delivered_at: status === "delivered" ? before.deliveredAt || now : isReopeningDelivered ? null : before.deliveredAt,
       proof_name: status === "delivered" ? before.proofName || "Dispatcher" : isReopeningDelivered ? null : before.proofName,
-      proof_notes: input.notes === undefined ? before.proofNotes : input.notes.trim() || null,
+      proof_notes: nextProofNotes,
+      checklist_json: JSON.stringify(nextChecklist),
       status,
       delivery_status: deliveryStatus,
       updated_at: now,
@@ -5622,7 +6333,26 @@ function numericValue(value?: string | number | null) {
 }
 
 function orderQuantity(order: DispatchOrder) {
+  const unitLabel = truckCapacityUnit(order.unit);
+  if (unitLabel && order.lineItems.length > 1) {
+    const lineItemTotal = order.lineItems
+      .filter((item) => truckCapacityUnit(item.unit) === unitLabel)
+      .reduce((total, item) => total + numericValue(item.quantity), 0);
+    if (lineItemTotal > 0) return lineItemTotal;
+  }
   return numericValue(order.quantity);
+}
+
+function quantityVerificationError(order: DispatchOrder, verifiedQuantity = "") {
+  if (order.assignedRouteId) return "";
+  const expectedQuantity = orderQuantity(order);
+  const suppliedQuantity = numericValue(verifiedQuantity);
+  if (!expectedQuantity) return "This order is missing a quantity and cannot be assigned yet.";
+  if (!suppliedQuantity) return "PLEASE CHECK SHOPIFY FOR ANY CHANGES!! Enter the order quantity before assigning this order.";
+  if (Math.abs(suppliedQuantity - expectedQuantity) > 0.0001) {
+    return "Quantity verification failed. Please check Shopify, then enter the correct order quantity.";
+  }
+  return "";
 }
 
 function truckCapacityUnit(unit: string) {
@@ -5663,12 +6393,57 @@ function splitBaseOrderNumber(order: DispatchOrder) {
   return base.replace(/[a-z]$/i, "");
 }
 
+function shopifyOrderGroupId(order: DispatchOrder) {
+  const checklist = parseChecklist(order.checklistJson);
+  return String(checklist.shopifyOrderId || checklist.shopifyOrderName || "").trim();
+}
+
+function shopifyOrderSku(order: DispatchOrder) {
+  const checklist = parseChecklist(order.checklistJson);
+  return String(checklist.sku || checklist.productSourceSku || "").trim();
+}
+
+function isShopifyAddOnSku(order: DispatchOrder) {
+  return /^(500|700)(?:\D|$)/i.test(shopifyOrderSku(order));
+}
+
+async function loadActiveShopifySiblingOrders(order: DispatchOrder, options: { sameRouteOnly?: boolean } = {}) {
+  const groupId = shopifyOrderGroupId(order);
+  if (!groupId) return [];
+
+  const baseOrderNumber = splitBaseOrderNumber(order);
+  const { data, error } = await supabase
+    .from("dispatch_orders")
+    .select(ORDER_COLUMNS)
+    .not("status", "in", "(delivered,cancelled)")
+    .or("delivery_status.is.null,delivery_status.neq.delivered")
+    .not("checklist_json", "is", null)
+    .ilike("order_number", `${baseOrderNumber}%`)
+    .limit(25);
+
+  if (error) throw new Error(formatSupabaseError(error));
+
+  return (data || [])
+    .map(normalizeOrder)
+    .filter((sibling) =>
+      sibling.id !== order.id &&
+      shopifyOrderGroupId(sibling) === groupId &&
+      (!options.sameRouteOnly || sibling.assignedRouteId === order.assignedRouteId) &&
+      isShopifyAddOnSku(sibling),
+    );
+}
+
 function formatSplitQuantity(value: number) {
   if (!Number.isFinite(value)) return "";
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, "");
 }
 
-function splitCapacityError(order: DispatchOrder, route: DispatchRoute | null, splitCount: number) {
+function splitCapacityError(
+  order: DispatchOrder,
+  route: DispatchRoute | null,
+  splitCount: number,
+  capacityOverridePassword = "",
+) {
   const unitLabel = truckCapacityUnit(order.unit);
   if (!unitLabel) return "";
   if (!route?.truck?.trim()) return "This route needs a truck number before assigning ton or yard loads.";
@@ -5676,6 +6451,16 @@ function splitCapacityError(order: DispatchOrder, route: DispatchRoute | null, s
   const quantity = orderQuantity(order);
   const capacity = routeTruckCapacity(route, order.unit);
   if (!quantity || !capacity || quantity <= capacity) return "";
+  const overridePassword = String(capacityOverridePassword || "").trim();
+  if (overridePassword) {
+    if (!DISPATCH_MANAGER_OVERRIDE_PASSWORD) {
+      return "Manager override is not configured. Set DISPATCH_MANAGER_OVERRIDE_PASSWORD, then restart the app.";
+    }
+    if (overridePassword !== DISPATCH_MANAGER_OVERRIDE_PASSWORD) {
+      return "Manager override password is incorrect.";
+    }
+    return "";
+  }
   if (splitCount < 2) {
     return `${order.customer || order.orderNumber} needs ${formatSplitQuantity(quantity)} ${unitLabel}, which is over ${route.truck}'s ${formatSplitQuantity(capacity)} ${unitLabel} limit. Split the order before assigning it.`;
   }
@@ -5688,7 +6473,14 @@ function splitCapacityError(order: DispatchOrder, route: DispatchRoute | null, s
   return "";
 }
 
-export async function assignOrder(orderId: string, routeId: string, splitCount = 0): Promise<AssignOrderResult> {
+export async function assignOrder(
+  orderId: string,
+  routeId: string,
+  splitCount = 0,
+  capacityOverridePassword = "",
+  verifiedQuantity = "",
+  groupShopifyAddOns = true,
+): Promise<AssignOrderResult> {
   const nextSequence = await getNextStopSequence(routeId);
   const assignedRoute = await getDispatchRouteById(routeId);
   const { data: beforeData, error: beforeError } = await supabase
@@ -5699,8 +6491,16 @@ export async function assignOrder(orderId: string, routeId: string, splitCount =
 
   if (beforeError) throw new Error(formatSupabaseError(beforeError));
   const beforeOrder = normalizeOrder(beforeData);
+  const verificationError = quantityVerificationError(beforeOrder, verifiedQuantity);
+  if (verificationError) throw new Error(verificationError);
   const requestedSplitCount = Math.floor(Number(splitCount || 0));
-  const capacityError = splitCapacityError(beforeOrder, assignedRoute, requestedSplitCount);
+  const overridePassword = String(capacityOverridePassword || "").trim();
+  const capacityError = splitCapacityError(
+    beforeOrder,
+    assignedRoute,
+    requestedSplitCount,
+    overridePassword,
+  );
   if (capacityError) throw new Error(capacityError);
 
   const quantity = orderQuantity(beforeOrder);
@@ -5822,22 +6622,52 @@ export async function assignOrder(orderId: string, routeId: string, splitCount =
   updatedOrder = await refreshStoredTimingForAssignedDriver(updatedOrder, assignedRoute);
   updatedOrder = await syncShopifyFulfilledForAssignedOrder(updatedOrder, routeId, "route-assignment");
   const previousRouteId = beforeOrder.assignedRouteId;
-  await resequenceRoutes([previousRouteId, routeId]);
+  const siblingOrders = groupShopifyAddOns ? await loadActiveShopifySiblingOrders(beforeOrder) : [];
+  const updatedSiblings: DispatchOrder[] = [];
+  const siblingPreviousRouteIds = new Set<string | null>();
+
+  for (const [index, sibling] of siblingOrders.entries()) {
+    siblingPreviousRouteIds.add(sibling.assignedRouteId);
+    const { data: siblingData, error: siblingError } = await supabase
+      .from("dispatch_orders")
+      .update({
+        assigned_route_id: routeId,
+        stop_sequence: nextSequence + index + 1,
+        status: "scheduled",
+        delivery_status: "not_started",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", sibling.id)
+      .select(ORDER_COLUMNS)
+      .single();
+
+    if (siblingError) throw new Error(formatSupabaseError(siblingError));
+    let updatedSibling = normalizeOrder(siblingData);
+    updatedSibling = await refreshStoredTimingForAssignedDriver(updatedSibling, assignedRoute);
+    updatedSibling = await syncShopifyFulfilledForAssignedOrder(updatedSibling, routeId, "route-assignment-grouped");
+    updatedSiblings.push(updatedSibling);
+  }
+
+  await resequenceRoutes([previousRouteId, routeId, ...Array.from(siblingPreviousRouteIds)]);
   await writeAuditLog({
-    action: "assign_order",
+    action: overridePassword ? "assign_order_manager_override" : siblingOrders.length ? "assign_shopify_order_group" : "assign_order",
     actor: "dispatcher",
     orderId,
     routeId,
-    message: `Assigned ${updatedOrder.orderNumber} to route ${routeId}.`,
+    message: siblingOrders.length
+      ? `Assigned ${updatedOrder.orderNumber} and ${siblingOrders.length} Shopify sibling ticket${siblingOrders.length === 1 ? "" : "s"} to route ${routeId}.`
+      : overridePassword
+        ? `Manager override assigned ${updatedOrder.orderNumber} over ${assignedRoute?.truck || "truck"} capacity to route ${routeId}.`
+        : `Assigned ${updatedOrder.orderNumber} to route ${routeId}.`,
     before: beforeOrder,
-    after: updatedOrder,
+    after: siblingOrders.length ? { updatedOrder, updatedSiblings } : updatedOrder,
   });
   return {
     ok: true,
-    message: "Assigned.",
+    message: siblingOrders.length ? `Assigned ${1 + siblingOrders.length} tickets from the same Shopify order.` : "Assigned.",
     updatedOrder,
-    createdOrders: [],
-    createdCount: 1,
+    createdOrders: updatedSiblings,
+    createdCount: 1 + updatedSiblings.length,
   };
 }
 
@@ -5997,11 +6827,14 @@ export async function markStopDelivered(
   orderId: string,
   input: { proofName: string; proofNotes: string; gpsLocation: string; photoUrls: string },
 ) {
-  const { data: beforeData } = await supabase
+  const { data: beforeData, error: beforeError } = await supabase
     .from("dispatch_orders")
     .select(ORDER_COLUMNS)
     .eq("id", orderId)
     .single();
+  if (beforeError) throw new Error(formatSupabaseError(beforeError));
+  const beforeOrder = normalizeOrder(beforeData);
+  const siblingOrders = await loadActiveShopifySiblingOrders(beforeOrder, { sameRouteOnly: true });
   const now = new Date().toISOString();
   const deliveredInput = {
     ...input,
@@ -6025,6 +6858,28 @@ export async function markStopDelivered(
 
   if (error) throw new Error(formatSupabaseError(error));
   const updatedOrder = normalizeOrder(data);
+  const updatedOrders = [updatedOrder];
+
+  for (const sibling of siblingOrders) {
+    const { data: siblingData, error: siblingError } = await supabase
+      .from("dispatch_orders")
+      .update({
+        status: "delivered",
+        delivery_status: "delivered",
+        delivered_at: now,
+        proof_name: input.proofName || null,
+        proof_notes: input.proofNotes || null,
+        signature_data: input.gpsLocation || null,
+        photo_urls: deliveredInput.photoUrls || null,
+        updated_at: now,
+      })
+      .eq("id", sibling.id)
+      .select(ORDER_COLUMNS)
+      .single();
+
+    if (siblingError) throw new Error(formatSupabaseError(siblingError));
+    updatedOrders.push(normalizeOrder(siblingData));
+  }
 
   void finalizeStopDeliveredInBackground({
     beforeData,
@@ -6036,7 +6891,19 @@ export async function markStopDelivered(
     console.warn("[dispatch-v2 delivered follow-up failed]", error instanceof Error ? error.message : error);
   });
 
-  return updatedOrder;
+  for (const siblingOrder of updatedOrders.slice(1)) {
+    void finalizeStopDeliveredInBackground({
+      beforeData: siblingOrders.find((sibling) => sibling.id === siblingOrder.id) || null,
+      orderId: siblingOrder.id,
+      initialOrder: siblingOrder,
+      input: deliveredInput,
+      now,
+    }).catch((error) => {
+      console.warn("[dispatch-v2 sibling delivered follow-up failed]", error instanceof Error ? error.message : error);
+    });
+  }
+
+  return Object.assign(updatedOrder, { updatedOrders });
 }
 
 async function finalizeStopDeliveredInBackground(input: {
@@ -6121,7 +6988,7 @@ async function finalizeStopDeliveredInBackground(input: {
     message: `${updatedOrder.orderNumber} delivered by ${input.input.proofName}.${
       metric?.actualDriveMinutes ? ` Actual drive time: ${metric.actualDriveMinutes} min.` : ""
     } ${photoMessage} ${emailResult.message} Shopify: ${shopifyResult.message}`,
-    before: input.beforeData ? normalizeOrder(input.beforeData) : null,
+    before: input.beforeData?.orderNumber ? input.beforeData : input.beforeData ? normalizeOrder(input.beforeData) : null,
     after: {
       ...updatedOrder,
       photoUrls: updatedOrder.photoUrls ? "[captured]" : null,

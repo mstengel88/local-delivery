@@ -600,6 +600,7 @@ export async function action({ request }: any) {
         sku: product.sku,
         vendor: product.vendor,
         unitLabel: product.unitLabel || "",
+        grams: product.grams || 0,
         quantity,
         price: unitPrice,
       };
@@ -609,6 +610,7 @@ export async function action({ request }: any) {
     sku: string;
     vendor: string;
     unitLabel?: string;
+    grams?: number;
     quantity: number;
     price: number;
   }>;
@@ -681,6 +683,7 @@ export async function action({ request }: any) {
     items: selectedProducts.map((item) => ({
       sku: item.sku,
       quantity: item.quantity,
+      grams: item.grams || 0,
       requiresShipping: true,
       pickupVendor: item.vendor,
       price: item.price,

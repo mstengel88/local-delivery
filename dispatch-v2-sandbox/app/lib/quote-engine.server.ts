@@ -11,6 +11,8 @@ type MaterialRule = {
   material_name: string;
   truck_capacity: number;
   vendor_source?: string | null;
+  delivery_mode?: string | null;
+  capacity_unit?: string | null;
   is_active: boolean;
   sort_order: number;
 };
@@ -140,6 +142,46 @@ const FALLBACK_MATERIAL_RULES: MaterialRule[] = [
   },
 ];
 
+type CapacityUnit = "quantity" | "weight_lb";
+
+function normalizeDeliveryMode(value?: string | null): string {
+  const normalized = (value || "bulk").trim().toLowerCase();
+  if (["paver", "pavers", "pallet", "pallets"].includes(normalized)) return "paver";
+  return "bulk";
+}
+
+function normalizeCapacityUnit(value?: string | null): CapacityUnit {
+  const normalized = (value || "quantity").trim().toLowerCase();
+  if (["weight", "weight_lb", "weight_lbs", "pounds", "lbs", "lb"].includes(normalized)) {
+    return "weight_lb";
+  }
+  return "quantity";
+}
+
+function itemWeightPounds(item: QuoteItem): number {
+  const grams = Number(item.grams || 0);
+  if (!Number.isFinite(grams) || grams <= 0) return 0;
+  return (grams * (Number(item.quantity) || 1)) / 453.59237;
+}
+
+function getBillableLoadQuantity(item: QuoteItem, capacityUnit: CapacityUnit): number {
+  if (capacityUnit === "weight_lb") {
+    const pounds = itemWeightPounds(item);
+    if (pounds > 0) return pounds;
+  }
+
+  return Number(item.quantity) || 1;
+}
+
+function formatCapacityUnit(unit: CapacityUnit): string {
+  return unit === "weight_lb" ? "lb" : "units";
+}
+
+function formatLoadQuantity(value: number, unit: CapacityUnit): string {
+  if (unit === "weight_lb") return `${Math.ceil(value).toLocaleString()} lb`;
+  return `${Number.isInteger(value) ? value : value.toFixed(2)} units`;
+}
+
 function getCache<T>(entry: CacheEntry<T> | null): T | null {
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) return null;
@@ -225,11 +267,31 @@ async function getMaterialRules(): Promise<MaterialRule[]> {
   const cached = getCache(materialRulesCache);
   if (cached) return cached;
 
-  const { data, error } = await supabaseAdmin
+  const extendedSelect =
+    "prefix, material_name, truck_capacity, vendor_source, delivery_mode, capacity_unit, is_active, sort_order";
+  const legacySelect =
+    "prefix, material_name, truck_capacity, vendor_source, is_active, sort_order";
+
+  let data: MaterialRule[] | null = null;
+  let error: { code?: string; message?: string } | null = null;
+
+  const extendedResult = await supabaseAdmin
     .from("shipping_material_rules")
-    .select("prefix, material_name, truck_capacity, vendor_source, is_active, sort_order")
+    .select(extendedSelect)
     .eq("is_active", true)
     .order("sort_order", { ascending: true });
+  data = (extendedResult.data || null) as MaterialRule[] | null;
+  error = extendedResult.error;
+
+  if (error?.code === "42703" || /does not exist/i.test(error?.message || "")) {
+    const legacy = await supabaseAdmin
+      .from("shipping_material_rules")
+      .select(legacySelect)
+      .eq("is_active", true)
+      .order("sort_order", { ascending: true });
+    data = (legacy.data || null) as MaterialRule[] | null;
+    error = legacy.error;
+  }
 
   const result =
     error || !data || data.length === 0 ? FALLBACK_MATERIAL_RULES : data;
@@ -255,6 +317,8 @@ function getMaterialFromSku(
   materialName: string;
   truckCapacity: number;
   fallbackVendorSource: string;
+  deliveryMode: string;
+  capacityUnit: CapacityUnit;
 } {
   const normalizedSku = normalizeSku(sku);
   const match = normalizedSku.match(/^(\d{3})/);
@@ -266,6 +330,8 @@ function getMaterialFromSku(
       materialName: "Material",
       truckCapacity: DEFAULT_MAX_QTY_PER_TRUCK,
       fallbackVendorSource: "",
+      deliveryMode: "bulk",
+      capacityUnit: "quantity",
     };
   }
 
@@ -277,6 +343,8 @@ function getMaterialFromSku(
       materialName: "Material",
       truckCapacity: DEFAULT_MAX_QTY_PER_TRUCK,
       fallbackVendorSource: "",
+      deliveryMode: "bulk",
+      capacityUnit: "quantity",
     };
   }
 
@@ -285,6 +353,8 @@ function getMaterialFromSku(
     materialName: rule.material_name,
     truckCapacity: Number(rule.truck_capacity) || DEFAULT_MAX_QTY_PER_TRUCK,
     fallbackVendorSource: rule.vendor_source || "",
+    deliveryMode: normalizeDeliveryMode(rule.delivery_mode),
+    capacityUnit: normalizeCapacityUnit(rule.capacity_unit),
   };
 }
 
@@ -532,8 +602,11 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
     string,
     {
       qty: number;
+      displayQty: number;
       materialName: string;
       truckCapacity: number;
+      deliveryMode: string;
+      capacityUnit: CapacityUnit;
       pickupVendor: string;
       pickupAddress: string;
     }
@@ -544,8 +617,9 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
   for (const item of shippableItems) {
     const itemQty = item.quantity || 1;
-    const { prefix, materialName, truckCapacity, fallbackVendorSource } =
+    const { prefix, materialName, truckCapacity, fallbackVendorSource, deliveryMode, capacityUnit } =
       getMaterialFromSku(item.sku, materialRules);
+    const loadQty = getBillableLoadQuantity(item, capacityUnit);
     const itemLoadKey = getItemLoadKey(item, materialName);
 
     const pickupVendorLabel =
@@ -566,23 +640,29 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
       materialName,
       itemLoadKey,
       truckCapacity,
+      deliveryMode,
+      capacityUnit,
     ].join("|");
 
     if (!groupedItems[groupKey]) {
       groupedItems[groupKey] = {
         qty: 0,
+        displayQty: 0,
         materialName,
         truckCapacity,
+        deliveryMode,
+        capacityUnit,
         pickupVendor: pickupOrigin.label,
         pickupAddress: pickupOrigin.address,
       };
     }
 
-    groupedItems[groupKey].qty += itemQty;
+    groupedItems[groupKey].qty += loadQty;
+    groupedItems[groupKey].displayQty += itemQty;
 
     if (settings.enableDebugLogging) {
       console.log(
-        `[QUOTE ITEM] prefix=${prefix || "none"} sku=${item.sku || "none"} material=${materialName} pickupVendor=${pickupOrigin.label} qty=${itemQty} capacity=${truckCapacity}`,
+        `[QUOTE ITEM] prefix=${prefix || "none"} sku=${item.sku || "none"} material=${materialName} pickupVendor=${pickupOrigin.label} qty=${itemQty} loadQty=${formatLoadQuantity(loadQty, capacityUnit)} capacity=${truckCapacity} ${formatCapacityUnit(capacityUnit)} mode=${deliveryMode}`,
       );
     }
   }
@@ -661,7 +741,7 @@ export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
 
     if (settings.enableDebugLogging) {
       console.log(
-        `[QUOTE GROUP BATCH] source=${group.pickupVendor} material=${group.materialName} qty=${group.qty} capacity=${group.truckCapacity} trucks=${trucksForGroup} customerMiles=${oneWayMilesForRadiusCheck} loopMiles=${totalLoopMiles} cost=${groupCostDollars.toFixed(2)}`,
+        `[QUOTE GROUP BATCH] source=${group.pickupVendor} material=${group.materialName} mode=${group.deliveryMode} qty=${formatLoadQuantity(group.qty, group.capacityUnit)} capacity=${group.truckCapacity} ${formatCapacityUnit(group.capacityUnit)} trucks=${trucksForGroup} customerMiles=${oneWayMilesForRadiusCheck} loopMiles=${totalLoopMiles} cost=${groupCostDollars.toFixed(2)}`,
       );
     }
   }

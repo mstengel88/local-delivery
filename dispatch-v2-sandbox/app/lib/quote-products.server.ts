@@ -4,9 +4,11 @@ export type QuoteProductOption = {
   sku: string;
   variantId?: string;
   title: string;
+  handle?: string;
   vendor: string;
   imageUrl?: string;
   unitLabel?: string;
+  grams?: number;
   price?: number;
   contractorTier1Price?: number;
   contractorTier2Price?: number;
@@ -16,10 +18,15 @@ type ProductSourceMapRow = {
   sku: string;
   variant_id: string | null;
   product_title: string | null;
+  product_handle?: string | null;
+  shopify_product_handle?: string | null;
+  handle?: string | null;
+  product_slug?: string | null;
   pickup_vendor: string | null;
   image_url: string | null;
   unit_label?: string | null;
   price_unit_label?: string | null;
+  weight_grams?: number | string | null;
   price: number | string | null;
 };
 
@@ -31,10 +38,14 @@ type ShopifyProductVariantNode = {
   image?: {
     url?: string | null;
   } | null;
+  palletWeight?: {
+    value?: string | null;
+  } | null;
 };
 
 type ShopifyProductNode = {
   title?: string | null;
+  handle?: string | null;
   vendor?: string | null;
   metafield?: {
     value?: string | null;
@@ -64,6 +75,12 @@ function toNumberOrUndefined(value: unknown) {
     : Number(value);
 }
 
+function poundsToGrams(value: unknown) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) return undefined;
+  return numericValue * 453.59237;
+}
+
 export async function getProductOptionsFromSupabase(): Promise<
   QuoteProductOption[]
 > {
@@ -83,9 +100,16 @@ export async function getProductOptionsFromSupabase(): Promise<
       sku: row.sku,
       variantId: row.variant_id || "",
       title: row.product_title || row.sku,
+      handle:
+        row.product_handle ||
+        row.shopify_product_handle ||
+        row.handle ||
+        row.product_slug ||
+        "",
       vendor: row.pickup_vendor || "",
       imageUrl: row.image_url || "",
       unitLabel: row.unit_label || row.price_unit_label || "",
+      grams: toNumberOrUndefined(row.weight_grams),
       price: toNumberOrUndefined(row.price),
       contractorTier1Price: toNumberOrUndefined(
         row.contractor_tier_1_price ?? row.tier_1_price,
@@ -120,7 +144,7 @@ export async function syncProductOptionsToSupabase(
   const skus = products.map((product) => product.sku);
   const { data: existingRows, error: existingError } = await supabaseAdmin
     .from("product_source_map")
-    .select("sku, variant_id, product_title, pickup_vendor, image_url, unit_label, price")
+    .select("*")
     .in("sku", skus);
 
   if (existingError) {
@@ -145,6 +169,12 @@ export async function syncProductOptionsToSupabase(
       pickup_vendor: product.vendor || existing?.pickup_vendor || "",
       image_url: product.imageUrl || existing?.image_url || null,
       unit_label: product.unitLabel || existing?.unit_label || null,
+      weight_grams:
+        product.grams === null || product.grams === undefined
+          ? existing?.weight_grams === null || existing?.weight_grams === undefined
+            ? null
+            : Number(existing.weight_grams)
+          : Number(product.grams),
       price:
         product.price === null || product.price === undefined
           ? existing?.price === null || existing?.price === undefined
@@ -155,9 +185,17 @@ export async function syncProductOptionsToSupabase(
     };
   });
 
-  const { error } = await supabaseAdmin
+  let { error } = await supabaseAdmin
     .from("product_source_map")
     .upsert(rows, { onConflict: "sku" });
+
+  if (error?.code === "PGRST204" || error?.code === "42703" || /weight_grams/i.test(error?.message || "")) {
+    const legacyRows = rows.map(({ weight_grams, ...row }) => row);
+    const legacyResult = await supabaseAdmin
+      .from("product_source_map")
+      .upsert(legacyRows, { onConflict: "sku" });
+    error = legacyResult.error;
+  }
 
   if (error) {
     console.error("[SYNC PRODUCT OPTIONS ERROR]", error);
@@ -166,11 +204,47 @@ export async function syncProductOptionsToSupabase(
 }
 
 export async function fetchProductOptionsFromShopify(admin: ShopifyAdminClient) {
-  const response = await admin.graphql(`
+  const queryWithPalletWeight = `
     query SyncProductsForQuotes {
       products(first: 100, sortKey: TITLE) {
         nodes {
           title
+          handle
+          vendor
+          metafield(namespace: "green_hills", key: "price_unit_label") {
+            value
+          }
+          legacyUnitLabel: metafield(namespace: "$app", key: "price_unit_label") {
+            value
+          }
+          featuredImage {
+            url
+          }
+          variants(first: 50) {
+            nodes {
+              id
+              sku
+              title
+              price
+              image {
+                url
+              }
+              palletWeight: metafield(namespace: "custom", key: "pallet_weight_lbs") {
+                value
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const legacyQuery = `
+    query SyncProductsForQuotes {
+      products(first: 100, sortKey: TITLE) {
+        nodes {
+          title
+          handle
           vendor
           metafield(namespace: "green_hills", key: "price_unit_label") {
             value
@@ -195,9 +269,17 @@ export async function fetchProductOptionsFromShopify(admin: ShopifyAdminClient) 
         }
       }
     }
-  `);
+  `;
 
-  const json = await response.json();
+  let response = await admin.graphql(queryWithPalletWeight);
+  let json = await response.json();
+
+  if (Array.isArray(json?.errors) && json.errors.length > 0) {
+    console.error("[SYNC PRODUCT PALLET WEIGHT LOOKUP ERROR]", json.errors);
+    response = await admin.graphql(legacyQuery);
+    json = await response.json();
+  }
+
   const products = (json?.data?.products?.nodes || []) as ShopifyProductNode[];
   const options: QuoteProductOption[] = [];
 
@@ -222,9 +304,11 @@ export async function fetchProductOptionsFromShopify(admin: ShopifyAdminClient) 
         sku,
         variantId: variant?.id || "",
         title,
+        handle: product?.handle || "",
         vendor,
         imageUrl: variant?.image?.url || productImage || "",
         unitLabel,
+        grams: poundsToGrams(variant?.palletWeight?.value),
         price:
           variant?.price === null || variant?.price === undefined
             ? undefined

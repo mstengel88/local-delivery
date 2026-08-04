@@ -9,6 +9,7 @@ import {
 } from "../lib/dispatch.server";
 import { requireDispatchUser } from "../lib/auth.server";
 import { PermissionNav } from "../components/PermissionNav";
+import { useDispatchVersionRevalidator } from "../components/useDispatchVersionRevalidator";
 
 function todayDateKey() {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -88,6 +89,7 @@ export default function Monitor() {
     loadMs: number;
   };
   const revalidator = useRevalidator();
+  useDispatchVersionRevalidator(revalidator, { intervalMs: 7000 });
   const isRefreshing = revalidator.state !== "idle";
 
   useEffect(() => {

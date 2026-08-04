@@ -18,14 +18,16 @@ const LINKS: Array<{ to: string; label: string; permission: DispatchPermission }
   { to: "/delivered", label: "Delivered", permission: "orders" },
   { to: "/routes", label: "Routes", permission: "routes" },
   { to: "/trucks", label: "Trucks", permission: "routes" },
+  { to: "/drivers", label: "Drivers", permission: "routes" },
+  { to: "/imports", label: "Import", permission: "imports" },
   { to: "/monitor", label: "Monitor", permission: "monitor" },
   { to: "/map", label: "Map", permission: "map" },
-  { to: "/imports", label: "Import", permission: "imports" },
   { to: "/updates", label: "Updates", permission: "updates" },
   { to: "/timing", label: "Timing", permission: "timing" },
   { to: "/driver", label: "Driver", permission: "driver" },
   { to: "/loader", label: "Loader", permission: "loader" },
   { to: "/audit", label: "Audit", permission: "audit" },
+  { to: "/admin", label: "Admin", permission: "settings" },
   { to: "/settings", label: "Settings", permission: "settings" },
 ];
 

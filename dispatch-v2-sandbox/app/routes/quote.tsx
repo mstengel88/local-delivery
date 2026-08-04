@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { data, Form, useActionData, useLoaderData, useNavigation } from "react-router";
+import { MaterialCalculator } from "../components/MaterialCalculator";
 import { PermissionNav } from "../components/PermissionNav";
 import { requireDispatchUser } from "../lib/auth.server";
 import {
@@ -35,7 +36,11 @@ type QuoteActionData = {
   billingCountry?: string;
   taxExempt?: boolean;
   address1?: string;
+  address2?: string;
   city?: string;
+  province?: string;
+  postalCode?: string;
+  country?: string;
   notes?: string;
 };
 
@@ -221,7 +226,11 @@ export async function action({ request }: { request: Request }) {
     billingPostalCode: String(form.get("billingPostalCode") || ""),
     billingCountry: String(form.get("billingCountry") || ""),
     address1: String(form.get("address1") || ""),
+    address2: String(form.get("address2") || ""),
     city: String(form.get("city") || ""),
+    province: String(form.get("province") || ""),
+    postalCode: String(form.get("postalCode") || ""),
+    country: String(form.get("country") || "US"),
     notes: String(form.get("notes") || ""),
     customShippingLabel: String(form.get("customShippingLabel") || "Custom Shipping"),
     customShippingQuantity: parseNumber(form.get("customShippingQuantity")),
@@ -241,6 +250,7 @@ export default function QuotePage() {
   const [lines, setLines] = useState<QuoteLineState[]>([
     { id: "line-1", sku: "", query: "", quantity: "1", customPrice: "" },
   ]);
+  const [calculatorLineId, setCalculatorLineId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [contractorTier, setContractorTier] = useState<"tier1" | "tier2">("tier1");
   const [companyName, setCompanyName] = useState(actionData?.companyName || "");
@@ -294,6 +304,11 @@ export default function QuotePage() {
   function updateLine(id: string, patch: Partial<QuoteLineState>) {
     setLines((current) => current.map((line) => (line.id === id ? { ...line, ...patch } : line)));
   }
+
+  const calculatorLine = calculatorLineId
+    ? lines.find((line) => line.id === calculatorLineId) || null
+    : null;
+  const calculatorProduct = calculatorLine?.sku ? productBySku.get(calculatorLine.sku) || null : null;
 
   function removeLine(id: string) {
     setLines((current) => current.length === 1 ? current : current.filter((line) => line.id !== id));
@@ -504,9 +519,20 @@ export default function QuotePage() {
                     <div className="selectedProduct">
                       {product.imageUrl ? <img src={product.imageUrl} alt="" /> : null}
                       <div>
-                        <strong>{product.title}</strong>
+                        <strong>
+                          {product.handle ? (
+                            <a className="productTitleLink" href={`https://www.greenhillssupply.com/products/${product.handle}`} target="_blank" rel="noreferrer">
+                              {product.title}
+                            </a>
+                          ) : (
+                            product.title
+                          )}
+                        </strong>
                         <span>{product.sku} · {product.vendor || "Green Hills Supply"} · {product.unitLabel || "Unit"}</span>
                       </div>
+                      <button type="button" className="materialCalculatorOpenButton" onClick={() => setCalculatorLineId(line.id)}>
+                        Material Calculator
+                      </button>
                     </div>
                   ) : null}
                 </div>
@@ -557,7 +583,12 @@ export default function QuotePage() {
                 <p><strong>Pricing:</strong> {actionData.result.pricingLabel}</p>
                 <p><strong>Products:</strong> {money(actionData.result.productTotal)}</p>
                 <p><strong>Delivery:</strong> {money(actionData.result.deliveryTotal)}</p>
-                <p><strong>Tax:</strong> {money(actionData.result.taxTotal)}</p>
+                <p>
+                  <strong>Tax:</strong> {money(actionData.result.taxTotal)}
+                  {actionData.result.taxRateLabel ? (
+                    <span className="muted"> ({actionData.result.taxRateLabel}, {(actionData.result.taxRate * 100).toFixed(3)}%)</span>
+                  ) : null}
+                </p>
                 <hr />
                 <h3>TOTAL: {money(actionData.result.grandTotal)}</h3>
                 <p><strong>Delivery Service:</strong> {actionData.result.deliveryService}</p>
@@ -584,6 +615,16 @@ export default function QuotePage() {
           </section>
         </aside>
       </section>
+      {calculatorProduct && calculatorLine ? (
+        <MaterialCalculator
+          product={calculatorProduct}
+          onClose={() => setCalculatorLineId(null)}
+          onApplyQuantity={(quantity) => {
+            updateLine(calculatorLine.id, { quantity: String(quantity) });
+            setCalculatorLineId(null);
+          }}
+        />
+      ) : null}
     </main>
   );
 }

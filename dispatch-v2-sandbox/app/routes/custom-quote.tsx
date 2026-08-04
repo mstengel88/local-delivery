@@ -1,6 +1,7 @@
 import { type FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Form, useActionData, useFetcher, useLoaderData, useLocation, useNavigation } from "react-router";
 import { data, redirect } from "react-router";
+import { MaterialCalculator } from "../components/MaterialCalculator";
 import {
   getRecentCustomQuotes,
   saveCustomQuote,
@@ -23,6 +24,7 @@ import {
   type QuoteAudience,
 } from "../lib/quote-pricing";
 import { getConfiguredQuoteTaxRate } from "../lib/quote-tax";
+import { getBestQuoteTaxRateForAddress } from "../lib/quote-tax.server";
 import { attachAddressAutocomplete, loadGooglePlaces } from "../lib/google-places";
 import { getQuote } from "../lib/quote-engine.server";
 import {
@@ -555,6 +557,7 @@ export async function action({ request }: any) {
         sku: product.sku,
         vendor: product.vendor,
         unitLabel: product.unitLabel || "",
+        grams: product.grams || 0,
         quantity,
         price: unitPrice,
       };
@@ -564,6 +567,7 @@ export async function action({ request }: any) {
     sku: string;
     vendor: string;
     unitLabel?: string;
+    grams?: number;
     quantity: number;
     price: number;
   }>;
@@ -643,6 +647,7 @@ export async function action({ request }: any) {
     items: selectedProducts.map((item) => ({
       sku: item.sku,
       quantity: item.quantity,
+      grams: item.grams || 0,
       requiresShipping: true,
       pickupVendor: item.vendor,
       price: item.price,
@@ -663,6 +668,17 @@ export async function action({ request }: any) {
           ? customDeliveryAmountValue
           : deliveryAmount)
       : deliveryAmount;
+  const addressTaxRateMatch =
+    taxExempt || (quoteAudience === "custom" && customTaxRateInput !== "")
+      ? null
+      : await getBestQuoteTaxRateForAddress({
+          address1,
+          address2,
+          city,
+          province,
+          postalCode,
+          country,
+        });
   const taxRate =
     taxExempt
       ? 0
@@ -671,7 +687,12 @@ export async function action({ request }: any) {
       ? (Number.isFinite(customTaxRateValue)
           ? customTaxRateValue
           : getConfiguredQuoteTaxRate())
-      : getConfiguredQuoteTaxRate();
+      : addressTaxRateMatch?.rate ?? getConfiguredQuoteTaxRate();
+  const taxRateLabel = taxExempt
+    ? "Tax exempt"
+    : quoteAudience === "custom" && customTaxRateInput !== ""
+      ? "Custom tax"
+      : addressTaxRateMatch?.label ?? "Default tax";
   const taxAmount = productsSubtotal * taxRate;
   const totalAmount = productsSubtotal + effectiveDeliveryAmount + taxAmount;
   const effectiveServiceName = deliveryQuote.serviceName;
@@ -783,6 +804,7 @@ export async function action({ request }: any) {
       productsSubtotal,
       deliveryAmount: effectiveDeliveryAmount,
       taxRate,
+      taxRateLabel,
       taxAmount,
       totalAmount,
     },
@@ -1021,6 +1043,7 @@ export default function PublicCustomQuotePage() {
   const [lines, setLines] = useState<QuoteLine[]>([
     { sku: "", quantity: "", search: "", customTitle: "", customPrice: "" },
   ]);
+  const [calculatorLineIndex, setCalculatorLineIndex] = useState<number | null>(null);
   const [selectedHistoryQuoteId, setSelectedHistoryQuoteId] = useState<string | null>(
     null,
   );
@@ -1289,6 +1312,12 @@ export default function PublicCustomQuotePage() {
       prev.map((line, i) => (i === index ? { ...line, ...patch } : line)),
     );
   }
+
+  const calculatorLine =
+    calculatorLineIndex === null ? null : lines[calculatorLineIndex] || null;
+  const calculatorProduct = calculatorLine?.sku
+    ? products.find((product: QuoteProductOption) => product.sku === calculatorLine.sku) || null
+    : null;
 
   function addLine() {
     setLines((prev) => [
@@ -1921,9 +1950,22 @@ export default function PublicCustomQuotePage() {
 
                         <div>
                           <div style={{ fontWeight: 700 }}>
-                            {quoteAudience === "custom" && line.customTitle
-                              ? line.customTitle
-                              : selectedProduct.title}
+                            {selectedProduct.handle ? (
+                              <a
+                                className="productTitleLink"
+                                href={`https://www.greenhillssupply.com/products/${selectedProduct.handle}`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {quoteAudience === "custom" && line.customTitle
+                                  ? line.customTitle
+                                  : selectedProduct.title}
+                              </a>
+                            ) : quoteAudience === "custom" && line.customTitle ? (
+                              line.customTitle
+                            ) : (
+                              selectedProduct.title
+                            )}
                           </div>
                           <div style={{ fontSize: 13, color: "#bfdbfe" }}>
                             {selectedProduct.sku} — {selectedProduct.vendor}
@@ -1946,6 +1988,14 @@ export default function PublicCustomQuotePage() {
                             })()}
                           </div>
                         </div>
+                        <button
+                          type="button"
+                          className="materialCalculatorOpenButton"
+                          onClick={() => setCalculatorLineIndex(index)}
+                          style={{ marginLeft: isMobile ? 0 : "auto" }}
+                        >
+                          Material Calculator
+                        </button>
                       </div>
                     ) : null}
 
@@ -2357,6 +2407,9 @@ export default function PublicCustomQuotePage() {
                 <div>
                   <strong style={{ color: "#93c5fd" }}>Tax:</strong> $
                   {Number(actionData.pricing.taxAmount).toFixed(2)}
+                  {actionData.pricing.taxRateLabel ? (
+                    <span className="muted"> ({actionData.pricing.taxRateLabel}, {(Number(actionData.pricing.taxRate || 0) * 100).toFixed(3)}%)</span>
+                  ) : null}
                 </div>
                 <div
                   style={{
@@ -2732,6 +2785,16 @@ export default function PublicCustomQuotePage() {
           </div>
         ) : null}
       </div>
+      {calculatorProduct && calculatorLineIndex !== null ? (
+        <MaterialCalculator
+          product={calculatorProduct}
+          onClose={() => setCalculatorLineIndex(null)}
+          onApplyQuantity={(quantity) => {
+            updateLine(calculatorLineIndex, { quantity: String(quantity) });
+            setCalculatorLineIndex(null);
+          }}
+        />
+      ) : null}
       {isMobile ? (
         <div style={mobileBottomNavStyle}>
           {canAccess("quoteTool") ? (
