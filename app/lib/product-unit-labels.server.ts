@@ -144,6 +144,100 @@ export async function ensureProductUnitLabelDefinition(admin: AdminGraphqlClient
   return { userErrors: [] };
 }
 
+export async function ensureShopUnitLabelColorDefinition(admin: AdminGraphqlClient) {
+  try {
+    const lookupResponse = await admin.graphql(
+      `#graphql
+        query ShopUnitLabelColorDefinition {
+          metafieldDefinitions(first: 20, ownerType: SHOP, namespace: "green_hills") {
+            nodes {
+              id
+              key
+              access {
+                storefront
+              }
+            }
+          }
+        }
+      `,
+    );
+
+    const lookupJson = await lookupResponse.json();
+    const definitions = lookupJson?.data?.metafieldDefinitions?.nodes ?? [];
+    const existing = definitions.find((definition: any) => definition.key === SHOP_LABEL_COLOR_KEY);
+
+    if (!existing) {
+      const createResponse = await admin.graphql(
+        `#graphql
+          mutation CreateShopUnitLabelColorDefinition {
+            metafieldDefinitionCreate(
+              definition: {
+                name: "Price unit label color"
+                namespace: "green_hills"
+                key: "price_unit_label_color"
+                description: "Color used for storefront unit labels."
+                type: "single_line_text_field"
+                ownerType: SHOP
+                access: {
+                  storefront: PUBLIC_READ
+                }
+              }
+            ) {
+              createdDefinition {
+                id
+              }
+              userErrors {
+                field
+                message
+              }
+            }
+          }
+        `,
+      );
+
+      const createJson = await createResponse.json();
+      return {
+        userErrors: createJson?.data?.metafieldDefinitionCreate?.userErrors ?? [],
+      };
+    }
+
+    if (existing.access?.storefront !== "PUBLIC_READ") {
+      const updateResponse = await admin.graphql(
+        `#graphql
+          mutation UpdateShopUnitLabelColorDefinition($id: ID!) {
+            metafieldDefinitionUpdate(
+              id: $id
+              definition: {
+                access: {
+                  storefront: PUBLIC_READ
+                }
+              }
+            ) {
+              updatedDefinition {
+                id
+              }
+              userErrors {
+                field
+                message
+              }
+            }
+          }
+        `,
+        { variables: { id: existing.id } },
+      );
+
+      const updateJson = await updateResponse.json();
+      return {
+        userErrors: updateJson?.data?.metafieldDefinitionUpdate?.userErrors ?? [],
+      };
+    }
+  } catch (error) {
+    console.error("[SHOP LABEL COLOR DEFINITION ERROR]", error);
+  }
+
+  return { userErrors: [] };
+}
+
 export async function listProductUnitLabels(
   admin: AdminGraphqlClient,
   first = 100,

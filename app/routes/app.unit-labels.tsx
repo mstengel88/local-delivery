@@ -3,6 +3,7 @@ import { data, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-ro
 import { authenticate } from "../shopify.server";
 import {
   ensureProductUnitLabelDefinition,
+  ensureShopUnitLabelColorDefinition,
   getShopUnitLabelColor,
   listProductUnitLabels,
   saveShopUnitLabelColor,
@@ -18,6 +19,7 @@ type ActionData = {
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin } = await authenticate.admin(request);
   await ensureProductUnitLabelDefinition(admin);
+  await ensureShopUnitLabelColorDefinition(admin);
   const products = await listProductUnitLabels(admin, 250);
   const labelColor = await getShopUnitLabelColor(admin);
 
@@ -27,6 +29,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 export async function action({ request }: ActionFunctionArgs) {
   const { admin } = await authenticate.admin(request);
   await ensureProductUnitLabelDefinition(admin);
+  await ensureShopUnitLabelColorDefinition(admin);
   const formData = await request.formData();
   const updates: Array<{ productId: string; unitLabel: string }> = [];
 
