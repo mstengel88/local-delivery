@@ -1,7 +1,11 @@
 {% liquid
   assign product_unit_label = blank
+  assign label_color = '#d1d5db'
   if product and product.metafields.green_hills and product.metafields.green_hills.price_unit_label
     assign product_unit_label = product.metafields.green_hills.price_unit_label.value
+  endif
+  if shop.metafields.green_hills and shop.metafields.green_hills.price_unit_label_color
+    assign label_color = shop.metafields.green_hills.price_unit_label_color.value
   endif
 %}
 
@@ -10,6 +14,7 @@
     "pageType": {{ request.page_type | json }},
     "shop": {{ shop.permanent_domain | json }},
     "apiUrl": {{ "https://app.ghstickets.com/api/unit-labels" | json }},
+    "labelColor": {{ label_color | json }},
     "product": {% if product %}{
       "id": {{ product.id | json }},
       "handle": {{ product.handle | json }},

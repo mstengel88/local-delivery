@@ -1,4 +1,5 @@
 (function () {
+  const DEFAULT_LABEL_COLOR = "#d1d5db";
   const root = document.getElementById("ghs-price-unit-labels-root");
   const dataScript = document.getElementById("ghs-price-unit-labels-data");
 
@@ -283,7 +284,7 @@
     const fetchedPayload = await fetchLabels(Array.from(handles));
     const fetchedLabelsByHandle = fetchedPayload.labelsByHandle || {};
     const fetchedLabelsBySku = fetchedPayload.labelsBySku || {};
-    if (fetchedPayload.color) {
+    if (fetchedPayload.color && (!pageData.labelColor || fetchedPayload.color !== DEFAULT_LABEL_COLOR)) {
       pageData.labelColor = fetchedPayload.color;
     }
     applyGlobalLabelColor();
