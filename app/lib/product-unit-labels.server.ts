@@ -47,6 +47,7 @@ type SkuLookupRow = {
 type ProductVariantsByProductIdNode = {
   id?: string | null;
   title?: string | null;
+  vendor?: string | null;
   featuredImage?: {
     url?: string | null;
   } | null;
@@ -54,6 +55,10 @@ type ProductVariantsByProductIdNode = {
     nodes?: Array<{
       id?: string | null;
       sku?: string | null;
+      title?: string | null;
+      image?: {
+        url?: string | null;
+      } | null;
     }> | null;
   } | null;
 };
@@ -461,12 +466,8 @@ async function syncProductUnitLabelsToSupabase(
     updates.map((update) => [update.productId.trim(), update.unitLabel.trim()]),
   );
 
-  const rows: Array<{
-    sku: string;
-    unit_label: string | null;
-    price_unit_label: string | null;
-    updated_at: string;
-  }> = [];
+  const collectedSkus = new Set<string>();
+  const productNodes: ProductVariantsByProductIdNode[] = [];
 
   for (let index = 0; index < uniqueProductIds.length; index += 50) {
     const chunk = uniqueProductIds.slice(index, index + 50);
@@ -477,6 +478,7 @@ async function syncProductUnitLabelsToSupabase(
             ... on Product {
               id
               title
+              vendor
               featuredImage {
                 url
               }
@@ -484,6 +486,10 @@ async function syncProductUnitLabelsToSupabase(
                 nodes {
                   id
                   sku
+                  title
+                  image {
+                    url
+                  }
                 }
               }
             }
@@ -495,24 +501,71 @@ async function syncProductUnitLabelsToSupabase(
 
     const json = await response.json();
     const nodes = (json?.data?.nodes ?? []) as ProductVariantsByProductIdNode[];
+    productNodes.push(...nodes);
 
     for (const product of nodes) {
+      for (const variant of product?.variants?.nodes || []) {
+        const sku = (variant?.sku || "").trim();
+        if (sku) collectedSkus.add(sku);
+      }
+    }
+  }
+
+  const { data: existingRows, error: existingRowsError } = await supabaseAdmin
+    .from("product_source_map")
+    .select("sku, variant_id, product_title, pickup_vendor, image_url, unit_label, price_unit_label")
+    .in("sku", Array.from(collectedSkus));
+
+  if (existingRowsError) {
+    throw existingRowsError;
+  }
+
+  const existingBySku = new Map<string, any>(
+    ((existingRows as any[] | null) || []).map((row) => [String(row.sku || "").trim(), row]),
+  );
+
+  const rows: Array<{
+    sku: string;
+    variant_id: string | null;
+    product_title: string;
+    pickup_vendor: string;
+    image_url: string | null;
+    unit_label: string | null;
+    price_unit_label: string | null;
+    updated_at: string;
+  }> = [];
+
+  for (const product of productNodes) {
       const productId = (product?.id || "").trim();
       const unitLabel = updatesByProductId.get(productId);
       if (unitLabel === undefined) continue;
+      const productTitle = (product?.title || "").trim();
+      const vendor = (product?.vendor || "").trim();
+      const productImage = product?.featuredImage?.url || "";
 
       for (const variant of product?.variants?.nodes || []) {
         const sku = (variant?.sku || "").trim();
         if (!sku) continue;
+        const existing = existingBySku.get(sku);
+        const variantId = (variant?.id || "").trim();
+        const variantTitle = (variant?.title || "").trim();
+        const title =
+          variantTitle && variantTitle !== "Default Title"
+            ? `${productTitle} - ${variantTitle}`
+            : productTitle || existing?.product_title || sku;
+        const imageUrl = variant?.image?.url || productImage || existing?.image_url || null;
 
         rows.push({
           sku,
+          variant_id: variantId || existing?.variant_id || null,
+          product_title: title || sku,
+          pickup_vendor: vendor || existing?.pickup_vendor || "",
+          image_url: imageUrl,
           unit_label: unitLabel || null,
           price_unit_label: unitLabel || null,
           updated_at: new Date().toISOString(),
         });
       }
-    }
   }
 
   if (!rows.length) return;
