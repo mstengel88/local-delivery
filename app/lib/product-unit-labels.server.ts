@@ -38,6 +38,12 @@ type HandleLookupProductNode = {
   } | null;
 };
 
+type SkuLookupRow = {
+  sku: string | null;
+  unit_label?: string | null;
+  price_unit_label?: string | null;
+};
+
 export const productUnitLabelDefinition = {
   namespace: UNIT_LABEL_NAMESPACE,
   key: UNIT_LABEL_KEY,
@@ -322,114 +328,118 @@ export async function saveProductUnitLabels(
   return { userErrors };
 }
 
-export async function getProductUnitLabelsByHandles(shop: string, handles: string[]) {
-  if (!shop || !handles.length) return {};
-
-  const uniqueHandles = Array.from(new Set(handles.map((handle) => handle.trim()).filter(Boolean)));
-  if (!uniqueHandles.length) return {};
-
-  const client = await shopify.unauthenticated.admin(shop);
-  const searchQuery = uniqueHandles.map((handle) => `handle:${handle}`).join(" OR ");
-
-  const response = await client.admin.graphql(
-    `#graphql
-      query ProductUnitLabelsByHandle($first: Int!, $query: String!) {
-        products(first: $first, query: $query) {
-          nodes {
-            handle
-            metafield(namespace: "green_hills", key: "price_unit_label") {
-              value
-            }
-            legacyUnitLabel: metafield(namespace: "$app", key: "price_unit_label") {
-              value
-            }
-            variants(first: 50) {
-              nodes {
-                sku
-              }
-            }
-          }
-        }
-      }
-    `,
-    {
-      variables: {
-        first: uniqueHandles.length,
-        query: searchQuery,
-      },
-    },
-  );
-
-  const json = await response.json();
-  const nodes = (json?.data?.products?.nodes ?? []) as HandleLookupProductNode[];
-
-  const skuSet = new Set<string>();
-  for (const product of nodes) {
-    for (const variant of product?.variants?.nodes || []) {
-      const sku = (variant?.sku || "").trim();
-      if (sku) skuSet.add(sku);
-    }
+export async function getProductUnitLabelsByHandlesAndSkus(
+  shop: string,
+  handles: string[],
+  skus: string[],
+) {
+  if ((!shop || !handles.length) && !skus.length) {
+    return { labelsByHandle: {}, labelsBySku: {}, color: DEFAULT_LABEL_COLOR };
   }
 
-  const supabaseLabelsBySku = new Map<string, string>();
-  if (skuSet.size) {
+  const uniqueHandles = Array.from(new Set(handles.map((handle) => handle.trim()).filter(Boolean)));
+  const uniqueSkus = Array.from(new Set(skus.map((sku) => sku.trim()).filter(Boolean)));
+
+  const labelsBySku: Record<string, string> = {};
+
+  if (uniqueSkus.length) {
     const { data, error } = await supabaseAdmin
       .from("product_source_map")
       .select("sku, unit_label, price_unit_label")
-      .in("sku", Array.from(skuSet));
+      .in("sku", uniqueSkus);
 
     if (error) {
       console.error("[SUPABASE UNIT LABEL LOOKUP ERROR]", error);
     } else {
-      for (const row of data || []) {
+      for (const row of (data || []) as SkuLookupRow[]) {
         const sku = String(row.sku || "").trim();
         const label = String(row.unit_label || row.price_unit_label || "").trim();
-        if (sku && label && !supabaseLabelsBySku.has(sku)) {
-          supabaseLabelsBySku.set(sku, label);
-        }
+        if (sku && label) labelsBySku[sku] = label;
       }
     }
   }
 
-  const labels = nodes.reduce((acc: Record<string, string>, product) => {
-    const handle = (product?.handle || "").trim();
-    if (!handle) return acc;
+  let labelsByHandle: Record<string, string> = {};
 
-    const shopifyLabel = String(
-      product?.metafield?.value || product?.legacyUnitLabel?.value || "",
-    ).trim();
+  if (shop && uniqueHandles.length) {
+    const client = await shopify.unauthenticated.admin(shop);
+    const searchQuery = uniqueHandles.map((handle) => `handle:${handle}`).join(" OR ");
 
-    if (shopifyLabel) {
-      acc[handle] = shopifyLabel;
-      return acc;
-    }
-
-    for (const variant of product?.variants?.nodes || []) {
-      const sku = (variant?.sku || "").trim();
-      const supabaseLabel = sku ? supabaseLabelsBySku.get(sku) : "";
-      if (supabaseLabel) {
-        acc[handle] = supabaseLabel;
-        break;
-      }
-    }
-
-    return acc;
-  }, {});
-
-  const shopResponse = await client.admin.graphql(
-    `#graphql
-      query ShopUnitLabelColorByShop {
-        shop {
-          metafield(namespace: "green_hills", key: "price_unit_label_color") {
-            value
+    const response = await client.admin.graphql(
+      `#graphql
+        query ProductUnitLabelsByHandle($first: Int!, $query: String!) {
+          products(first: $first, query: $query) {
+            nodes {
+              handle
+              metafield(namespace: "green_hills", key: "price_unit_label") {
+                value
+              }
+              legacyUnitLabel: metafield(namespace: "$app", key: "price_unit_label") {
+                value
+              }
+              variants(first: 50) {
+                nodes {
+                  sku
+                }
+              }
+            }
+          }
           }
         }
+      `,
+      {
+        variables: {
+          first: uniqueHandles.length,
+          query: searchQuery,
+        },
+      },
+    );
+
+    const json = await response.json();
+    const nodes = (json?.data?.products?.nodes ?? []) as HandleLookupProductNode[];
+
+    labelsByHandle = nodes.reduce((acc: Record<string, string>, product) => {
+      const handle = (product?.handle || "").trim();
+      if (!handle) return acc;
+
+      const shopifyLabel = String(
+        product?.metafield?.value || product?.legacyUnitLabel?.value || "",
+      ).trim();
+
+      if (shopifyLabel) {
+        acc[handle] = shopifyLabel;
+        return acc;
       }
-    `,
-  );
 
-  const shopJson = await shopResponse.json();
-  const color = shopJson?.data?.shop?.metafield?.value || DEFAULT_LABEL_COLOR;
+      for (const variant of product?.variants?.nodes || []) {
+        const sku = (variant?.sku || "").trim();
+        const supabaseLabel = sku ? labelsBySku[sku] : "";
+        if (supabaseLabel) {
+          acc[handle] = supabaseLabel;
+          break;
+        }
+      }
 
-  return { labels, color };
+      return acc;
+    }, {});
+
+    const shopResponse = await client.admin.graphql(
+      `#graphql
+        query ShopUnitLabelColorByShop {
+          shop {
+            metafield(namespace: "green_hills", key: "price_unit_label_color") {
+              value
+            }
+          }
+        }
+      `,
+    );
+
+    const shopJson = await shopResponse.json();
+    const color = shopJson?.data?.shop?.metafield?.value || DEFAULT_LABEL_COLOR;
+
+    return { labelsByHandle, labelsBySku, color };
+  }
+
+  return { labelsByHandle, labelsBySku, color: DEFAULT_LABEL_COLOR };
 }

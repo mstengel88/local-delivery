@@ -13,6 +13,7 @@
     "product": {% if product %}{
       "id": {{ product.id | json }},
       "handle": {{ product.handle | json }},
+      "sku": {{ product.selected_or_first_available_variant.sku | json }},
       "unitLabel": {{ product_unit_label | json }}
     }{% else %}null{% endif %},
     "collectionProducts": {
@@ -22,7 +23,10 @@
           {% if collection_product.metafields.green_hills and collection_product.metafields.green_hills.price_unit_label %}
             {% assign collection_unit_label = collection_product.metafields.green_hills.price_unit_label.value %}
           {% endif %}
-          {{ collection_product.handle | json }}: {{ collection_unit_label | json }}{% unless forloop.last %},{% endunless %}
+          {{ collection_product.handle | json }}: {
+            "unitLabel": {{ collection_unit_label | json }},
+            "sku": {{ collection_product.selected_or_first_available_variant.sku | json }}
+          }{% unless forloop.last %},{% endunless %}
         {% endfor %}
       {% endif %}
     }

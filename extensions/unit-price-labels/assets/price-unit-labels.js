@@ -195,7 +195,9 @@
       if (!(anchor instanceof HTMLAnchorElement)) return;
 
       const handle = normalizeHandleFromUrl(anchor.href);
-      const unitLabel = handle ? collectionProducts[handle] : null;
+      const productData = handle ? collectionProducts[handle] : null;
+      const unitLabel =
+        typeof productData === "string" ? productData : productData?.unitLabel || null;
       if (!unitLabel) return;
 
       const hyperPriceElement =
@@ -214,11 +216,20 @@
   }
 
   async function fetchLabels(handles) {
-    if (!apiUrl || !shop || !handles.length) return {};
+    const skus = [];
+    if (pageData.product?.sku) skus.push(pageData.product.sku);
+    Object.values(pageData.collectionProducts || {}).forEach((entry) => {
+      if (entry && typeof entry === "object" && entry.sku) skus.push(entry.sku);
+    });
+
+    if ((!apiUrl || !shop || !handles.length) && !skus.length) return {};
 
     const url = new URL(apiUrl);
-    url.searchParams.set("shop", shop);
+    if (shop) {
+      url.searchParams.set("shop", shop);
+    }
     handles.forEach((handle) => url.searchParams.append("handle", handle));
+    Array.from(new Set(skus.filter(Boolean))).forEach((sku) => url.searchParams.append("sku", sku));
 
     try {
       const response = await fetch(url.toString(), { credentials: "omit" });
@@ -228,7 +239,7 @@
       }
       const payload = await response.json();
       setDebug("Unit label API response", payload);
-      return payload || { labels: {} };
+      return payload || { labelsByHandle: {}, labelsBySku: {} };
     } catch (_error) {
       setDebug("Unit label API threw", { url: url.toString() });
       return {};
@@ -259,17 +270,39 @@
     setDebug("Handles detected", { handles: Array.from(handles), shop, apiUrl });
 
     const fetchedPayload = await fetchLabels(Array.from(handles));
-    const fetchedLabels = fetchedPayload.labels || {};
+    const fetchedLabelsByHandle = fetchedPayload.labelsByHandle || {};
+    const fetchedLabelsBySku = fetchedPayload.labelsBySku || {};
     if (fetchedPayload.color) {
       pageData.labelColor = fetchedPayload.color;
     }
     applyGlobalLabelColor();
-    if (productHandle && fetchedLabels[productHandle]) {
+    if (productHandle && (fetchedLabelsByHandle[productHandle] || fetchedLabelsBySku[pageData.product?.sku])) {
       pageData.product = pageData.product || {};
       pageData.product.handle = productHandle;
-      pageData.product.unitLabel = fetchedLabels[productHandle];
+      pageData.product.unitLabel =
+        fetchedLabelsByHandle[productHandle] || fetchedLabelsBySku[pageData.product?.sku];
     }
-    pageData.collectionProducts = Object.assign({}, pageData.collectionProducts || {}, fetchedLabels);
+    const nextCollectionProducts = { ...(pageData.collectionProducts || {}) };
+    Object.keys(nextCollectionProducts).forEach((handle) => {
+      const entry = nextCollectionProducts[handle];
+      const sku = entry && typeof entry === "object" ? entry.sku : undefined;
+      const fetchedLabel = fetchedLabelsByHandle[handle] || (sku ? fetchedLabelsBySku[sku] : "");
+
+      if (!fetchedLabel) return;
+
+      if (entry && typeof entry === "object") {
+        nextCollectionProducts[handle] = {
+          ...entry,
+          unitLabel: fetchedLabel,
+        };
+      } else {
+        nextCollectionProducts[handle] = {
+          sku,
+          unitLabel: fetchedLabel,
+        };
+      }
+    });
+    pageData.collectionProducts = nextCollectionProducts;
 
     applyProductLabel();
     applyCollectionLabels();
