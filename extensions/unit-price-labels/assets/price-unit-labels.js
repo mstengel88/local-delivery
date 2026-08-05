@@ -17,6 +17,11 @@
   const shop = pageData.shop;
   const apiUrl = pageData.apiUrl;
   const debugEnabled = new URLSearchParams(window.location.search).get("ghs-unit-debug") === "1";
+  let applyInFlight = false;
+  let applyQueued = false;
+  let applyTimer = null;
+  let lastFetchKey = "";
+  let lastFetchedPayload = null;
 
   function setDebug(message, details) {
     if (!debugEnabled) return;
@@ -241,18 +246,25 @@
     }
     handles.forEach((handle) => url.searchParams.append("handle", handle));
     Array.from(new Set(skus.filter(Boolean))).forEach((sku) => url.searchParams.append("sku", sku));
+    const fetchKey = url.toString();
+
+    if (fetchKey === lastFetchKey && lastFetchedPayload) {
+      return lastFetchedPayload;
+    }
 
     try {
-      const response = await fetch(url.toString(), { credentials: "omit" });
+      const response = await fetch(fetchKey, { credentials: "omit" });
       if (!response.ok) {
-        setDebug("Unit label API failed", { status: response.status, url: url.toString() });
+        setDebug("Unit label API failed", { status: response.status, url: fetchKey });
         return {};
       }
       const payload = await response.json();
+      lastFetchKey = fetchKey;
+      lastFetchedPayload = payload || { labelsByHandle: {}, labelsBySku: {} };
       setDebug("Unit label API response", payload);
-      return payload || { labelsByHandle: {}, labelsBySku: {} };
+      return lastFetchedPayload;
     } catch (_error) {
-      setDebug("Unit label API threw", { url: url.toString() });
+      setDebug("Unit label API threw", { url: fetchKey });
       return {};
     }
   }
@@ -330,13 +342,39 @@
     });
   }
 
-  document.addEventListener("shopify:section:load", applyAll);
-  document.addEventListener("DOMContentLoaded", applyAll);
-  window.addEventListener("load", applyAll);
+  async function runApplyAll() {
+    if (applyInFlight) {
+      applyQueued = true;
+      return;
+    }
 
-  const observer = new MutationObserver(() => applyAll());
+    applyInFlight = true;
+    try {
+      await applyAll();
+    } finally {
+      applyInFlight = false;
+      if (applyQueued) {
+        applyQueued = false;
+        scheduleApplyAll();
+      }
+    }
+  }
+
+  function scheduleApplyAll(delay = 75) {
+    if (applyTimer) window.clearTimeout(applyTimer);
+    applyTimer = window.setTimeout(() => {
+      applyTimer = null;
+      runApplyAll();
+    }, delay);
+  }
+
+  document.addEventListener("shopify:section:load", () => scheduleApplyAll());
+  document.addEventListener("DOMContentLoaded", () => scheduleApplyAll());
+  window.addEventListener("load", () => scheduleApplyAll());
+
+  const observer = new MutationObserver(() => scheduleApplyAll());
   observer.observe(document.body, { childList: true, subtree: true });
 
   applyGlobalLabelColor();
-  applyAll();
+  scheduleApplyAll(0);
 })();
