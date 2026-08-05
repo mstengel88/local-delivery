@@ -1,0 +1,40 @@
+# Shopify App Cutover
+
+`Local-Delivery` is the surviving Shopify app.
+
+## Final Shopify Extension Ownership
+
+- `unit-price-labels`: the only Online Store theme app embed. It adds unit labels to product and collection prices.
+- `checkout-ui`: the checkout delivery-area guard. It calls `https://app.ghstickets.com/api/shipping-estimate`.
+- `delivery-customization`: retired. The function returned no operations and did not change delivery options.
+
+The contractor operations website is a separate web application, not a theme
+app embed. It currently reads orders and writes fulfillment data through a
+Shopify offline session, so its Shopify app must not be uninstalled until that
+runtime is switched to the surviving `Local-Delivery` app credentials and has a
+fresh offline session.
+
+## Cutover Sequence
+
+1. Run `npm run verify:shopify-cutover` and `npm run build`.
+2. Create an unreleased preview with:
+   `npm run deploy -- --no-release --allow-updates --allow-deletes --version local-delivery-cutover-preview`
+3. Release the consolidated `Local-Delivery` version.
+4. Reauthorize `Local-Delivery` in Shopify so the new order and fulfillment
+   scopes are granted.
+5. Configure the contractor operations runtime to use the `Local-Delivery`
+   Shopify API key and secret while keeping its own Supabase and PostgreSQL
+   settings.
+6. Open `Local-Delivery` from Shopify Admin once to create the offline session
+   used by server-side order and fulfillment jobs.
+7. Validate product sync, order import, draft-order creation, and fulfillment
+   updates from the contractor operations website.
+8. Disable the contractor app embed in the live theme, if it is present.
+9. Uninstall the contractor Shopify app only after step 7 succeeds.
+
+## Rollback
+
+If contractor order or fulfillment actions fail, leave or reinstall the
+contractor Shopify app and restore its previous runtime API key and secret.
+The storefront unit-label embed remains owned by `Local-Delivery` and does not
+need to be rolled back.

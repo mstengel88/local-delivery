@@ -1,7 +1,0 @@
-query CartDeliveryOptionsTransformRunInput {
-  deliveryCustomization {
-    metafield(namespace: "$app:delivery-customization", key: "function-configuration") {
-      jsonValue
-    }
-  }
-}

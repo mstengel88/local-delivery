@@ -8,6 +8,7 @@
     "allowJs": true,
     "moduleResolution": "nodenext",
     "esModuleInterop": true,
+    "skipLibCheck": true,
   },
   "include": ["./src", "./shopify.d.ts"]
 }

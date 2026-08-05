@@ -4,7 +4,7 @@ import {
   useCartLines,
   useDeliveryGroups,
   useShippingAddress,
-} from '@shopify/ui-extensions/preact';
+} from '@shopify/ui-extensions/checkout/preact';
 import {render} from 'preact';
 import {useEffect, useMemo, useState} from 'preact/hooks';
 
@@ -187,23 +187,23 @@ function App() {
               : `Shipping is not available for this address because it is outside our ${radius}-mile delivery area.`}
           </s-text>
 
-          <s-text appearance="subdued">
+          <s-text color="subdued">
             Please choose in-store pickup to complete checkout, or call/text
             {` ${phone} `}for a custom delivery quote.
           </s-text>
 
           {pickupSelected ? (
-            <s-text appearance="success">
+            <s-text tone="success">
               In-store pickup is selected, so you can continue checkout.
             </s-text>
           ) : (
-            <s-text appearance="critical">
+            <s-text tone="critical">
               Delivery checkout is blocked until in-store pickup is selected.
             </s-text>
           )}
 
           <s-stack direction="inline" gap="base">
-            <s-button href={PHONE_LINK} appearance="primary">
+            <s-button href={PHONE_LINK} variant="primary">
               Call/Text {phone}
             </s-button>
 
@@ -228,8 +228,8 @@ function App() {
             padding="base"
             background="subdued"
           >
-            <s-stack gap="tight">
-              <s-text emphasis="bold">What you can do</s-text>
+            <s-stack gap="small">
+              <s-text type="strong">What you can do</s-text>
               <s-text>• Choose in-store pickup and complete checkout</s-text>
               <s-text>• Enter a delivery address inside our delivery area</s-text>
               <s-text>• Call or text us for a custom delivery quote</s-text>
@@ -242,8 +242,8 @@ function App() {
             padding="base"
             background="subdued"
           >
-            <s-stack gap="tight">
-              <s-text emphasis="bold">Call/Text for a quote</s-text>
+            <s-stack gap="small">
+              <s-text type="strong">Call/Text for a quote</s-text>
               <s-link href={PHONE_LINK}>{phone}</s-link>
             </s-stack>
           </s-box>

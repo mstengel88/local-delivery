@@ -12,6 +12,7 @@
     "start": "react-router-serve ./build/server/index.js",
     "docker-start": "npm run start",
     "setup": "prisma generate",
+    "verify:shopify-cutover": "node scripts/verify-shopify-cutover.mjs",
     "lint": "eslint --ignore-path .gitignore --cache --cache-location ./node_modules/.cache/eslint .",
     "shopify": "shopify",
     "prisma": "prisma",
