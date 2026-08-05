@@ -14,7 +14,6 @@ RUN apt-get update -y && apt-get install -y openssl
 
 COPY package*.json ./
 COPY extensions/checkout-ui/package.json ./extensions/checkout-ui/package.json
-COPY extensions/delivery-customization/package.json ./extensions/delivery-customization/package.json
 COPY prisma ./prisma
 
 RUN --mount=type=cache,target=/root/.npm npm ci --legacy-peer-deps --prefer-offline --progress=false
