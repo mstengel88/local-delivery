@@ -22,15 +22,18 @@ fresh offline session.
 3. Release the consolidated `Local-Delivery` version.
 4. Reauthorize `Local-Delivery` in Shopify so the new order and fulfillment
    scopes are granted.
-5. Configure the contractor operations runtime to use the `Local-Delivery`
-   Shopify API key and secret while keeping its own Supabase and PostgreSQL
-   settings.
-6. Open `Local-Delivery` from Shopify Admin once to create the offline session
-   used by server-side order and fulfillment jobs.
-7. Validate product sync, order import, draft-order creation, and fulfillment
-   updates from the contractor operations website.
-8. Disable the contractor app embed in the live theme, if it is present.
-9. Uninstall the contractor Shopify app only after step 7 succeeds.
+5. Set the same long random `SHOPIFY_GATEWAY_SECRET` value on both production
+   containers. Set `SHOPIFY_GATEWAY_URL` on the contractor container to
+   `https://app.ghstickets.com/api/internal/shopify-graphql`.
+6. Deploy both web applications and restart both containers.
+7. Open `Local-Delivery` from Shopify Admin once to create or refresh the
+   offline session used by the gateway.
+8. Validate the `GHS Shipping Calc` carrier service points to
+   `https://app.ghstickets.com/api/carrier-service`, then validate product
+   lookup, order import, draft-order creation, and fulfillment updates from the
+   contractor operations website.
+9. Disable the contractor app embed in the live theme, if it is present.
+10. Uninstall the contractor Shopify app only after step 8 succeeds.
 
 ## Rollback
 
