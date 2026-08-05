@@ -637,7 +637,6 @@ export async function getProductUnitLabelsByHandlesAndSkus(
                 }
               }
             }
-            }
           }
         `,
         {
@@ -649,6 +648,13 @@ export async function getProductUnitLabelsByHandlesAndSkus(
       );
 
       const json = await response.json();
+      if (json?.errors?.length) {
+        throw new Error(
+          `Shopify product unit label lookup failed: ${json.errors
+            .map((error: { message?: string }) => error.message || "Unknown GraphQL error")
+            .join("; ")}`,
+        );
+      }
       const nodes = (json?.data?.products?.nodes ?? []) as HandleLookupProductNode[];
 
       labelsByHandle = nodes.reduce((acc: Record<string, string>, product) => {
@@ -689,6 +695,13 @@ export async function getProductUnitLabelsByHandlesAndSkus(
       );
 
       const shopJson = await shopResponse.json();
+      if (shopJson?.errors?.length) {
+        throw new Error(
+          `Shopify unit label color lookup failed: ${shopJson.errors
+            .map((error: { message?: string }) => error.message || "Unknown GraphQL error")
+            .join("; ")}`,
+        );
+      }
       color = shopJson?.data?.shop?.metafield?.value || DEFAULT_LABEL_COLOR;
     } catch (error) {
       console.error("[UNIT LABEL SHOP LOOKUP ERROR]", error);
