@@ -42,6 +42,10 @@
   }
 
   const fallbackProductSelectors = [
+    ".product__block--price .f-price-item--sale",
+    ".product__block--price .f-price-item--regular",
+    ".product__block--price .f-price",
+    ".f-price--large",
     ".product__info-container .price",
     ".product .price",
     "[data-product-price]",
@@ -292,6 +296,11 @@
     const detectedCollectionHandles = collectionHandles();
     detectedCollectionHandles.forEach((handle) => handles.add(handle));
     setDebug("Handles detected", { handles: Array.from(handles), shop, apiUrl });
+
+    // Liquid metafields are already in pageData, so render them without waiting
+    // for the API fallback used by dynamically loaded or newly synced products.
+    applyProductLabel();
+    applyCollectionLabels();
 
     const fetchedPayload = await fetchLabels(Array.from(handles));
     const fetchedLabelsByHandle = fetchedPayload.labelsByHandle || {};
