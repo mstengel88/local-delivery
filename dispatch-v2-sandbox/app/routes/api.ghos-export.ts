@@ -4,6 +4,7 @@ import {
   loadOrdersForMaintenance,
   loadRoutesForMaintenance,
 } from "../lib/dispatch.server";
+import { loadOpenDispatchOrderIds } from "../lib/ghos-export.server";
 
 const GHOS_INTEGRATION_SECRET =
   process.env.GHOS_INTEGRATION_SECRET ||
@@ -78,9 +79,10 @@ export async function loader({ request }: { request: Request }) {
   const updatedAfter = parseUpdatedAfter(url);
 
   try {
-    const [loadedOrders, routes] = await Promise.all([
+    const [loadedOrders, routes, openOrderIds] = await Promise.all([
       loadOrdersForMaintenance(limit),
       loadRoutesForMaintenance(250),
+      loadOpenDispatchOrderIds(),
     ]);
 
     const orders = loadedOrders.filter((order) =>
@@ -101,6 +103,7 @@ export async function loader({ request }: { request: Request }) {
         cursor: latestUpdatedAt || generatedAt,
         count: orders.length,
         hasMore: loadedOrders.length === limit,
+        openOrderIds,
         orders: orders.map((order) => ({
           id: order.id,
           orderNumber: order.orderNumber,
