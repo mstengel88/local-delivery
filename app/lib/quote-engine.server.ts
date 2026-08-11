@@ -439,6 +439,82 @@ async function getDistanceMatrix(
 }
 
 export async function getQuote(input: QuoteInput): Promise<QuoteResult> {
+  const calculatorUrl =
+    process.env.SHOPIFY_SHIPPING_CALCULATOR_URL ||
+    "https://app.ghstickets.com/api/shipping-estimate";
+
+  try {
+    const response = await fetch(calculatorUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        shop: input.shop,
+        shippingAddress: {
+          address1: input.address1 || "",
+          address2: input.address2 || "",
+          city: input.city || "",
+          provinceCode: input.province || "",
+          zip: input.postalCode || "",
+          countryCode: input.country || "US",
+        },
+        lines: input.items.map((item) => ({
+          sku: item.sku,
+          quantity: item.quantity,
+          grams: item.grams || 0,
+          price: item.price || 0,
+          requiresShipping: item.requiresShipping !== false,
+          pickupVendor: item.pickupVendor || "",
+        })),
+      }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      console.error(
+        `[SHARED SHIPPING CALCULATOR] HTTP ${response.status}: ${body}`,
+      );
+      return unavailableSharedCalculatorQuote();
+    }
+
+    const quote = (await response.json()) as Partial<QuoteResult>;
+    if (!Number.isFinite(Number(quote.cents))) {
+      console.error("[SHARED SHIPPING CALCULATOR] Invalid response", quote);
+      return unavailableSharedCalculatorQuote();
+    }
+
+    return {
+      cents: Number(quote.cents),
+      serviceName: quote.serviceName || "Green Hills Delivery",
+      serviceCode: quote.serviceCode || "CUSTOM_DELIVERY",
+      description: quote.description || "Standard delivery pricing",
+      eta: quote.eta || "2–4 business days",
+      summary:
+        quote.summary ||
+        `Shipping: $${(Number(quote.cents) / 100).toFixed(2)}`,
+      outsideDeliveryArea: quote.outsideDeliveryArea || false,
+      outsideDeliveryMiles: quote.outsideDeliveryMiles || 0,
+      outsideDeliveryRadius:
+        quote.outsideDeliveryRadius || MAX_DELIVERY_RADIUS_MILES,
+      outsideDeliveryPhone: quote.outsideDeliveryPhone || OUTSIDE_RADIUS_PHONE,
+    };
+  } catch (error) {
+    console.error("[SHARED SHIPPING CALCULATOR] Request failed", error);
+    return unavailableSharedCalculatorQuote();
+  }
+}
+
+function unavailableSharedCalculatorQuote(): QuoteResult {
+  return {
+    serviceName: "Delivery Unavailable",
+    serviceCode: "CUSTOM_DELIVERY",
+    cents: 0,
+    description: "Shopify delivery calculator is temporarily unavailable",
+    eta: "Unavailable",
+    summary: "Shopify delivery calculator is temporarily unavailable",
+  };
+}
+
+async function getLegacyQuote(input: QuoteInput): Promise<QuoteResult> {
   const settings = await getAppSettings(input.shop);
 
   if (!settings.enableCalculatedRates) {
