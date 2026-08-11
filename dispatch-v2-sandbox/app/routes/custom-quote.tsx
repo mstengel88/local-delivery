@@ -27,6 +27,7 @@ import { getConfiguredQuoteTaxRate } from "../lib/quote-tax";
 import { getBestQuoteTaxRateForAddress } from "../lib/quote-tax.server";
 import { attachAddressAutocomplete, loadGooglePlaces } from "../lib/google-places";
 import { getQuote } from "../lib/quote-engine.server";
+import { getShopifyCarrierQuote } from "../lib/shopify-carrier-quote.server";
 import {
   loadDispatchB2BCompanies,
   type DispatchB2BCompany,
@@ -555,6 +556,7 @@ export async function action({ request }: any) {
       return {
         title: overrideTitle || product.title,
         sku: product.sku,
+        variantId: product.variantId || null,
         vendor: product.vendor,
         unitLabel: product.unitLabel || "",
         grams: product.grams || 0,
@@ -565,6 +567,7 @@ export async function action({ request }: any) {
     .filter(Boolean) as Array<{
     title: string;
     sku: string;
+    variantId?: string | null;
     vendor: string;
     unitLabel?: string;
     grams?: number;
@@ -635,24 +638,41 @@ export async function action({ request }: any) {
 
   const shop = process.env.SHOPIFY_STORE_DOMAIN || "darfaz-2e.myshopify.com";
 
-  const deliveryQuote = await getQuote({
-    shop,
-    postalCode,
-    country,
-    province,
-    city,
-    address1,
-    address2,
-    ratePerMinute: customRatePerMinute,
-    items: selectedProducts.map((item) => ({
-      sku: item.sku,
-      quantity: item.quantity,
-      grams: item.grams || 0,
-      requiresShipping: true,
-      pickupVendor: item.vendor,
-      price: item.price,
-    })),
-  });
+  const deliveryQuote =
+    quoteAudience === "custom"
+      ? await getQuote({
+          shop,
+          postalCode,
+          country,
+          province,
+          city,
+          address1,
+          address2,
+          ratePerMinute: customRatePerMinute,
+          items: selectedProducts.map((item) => ({
+            sku: item.sku,
+            quantity: item.quantity,
+            grams: item.grams || 0,
+            requiresShipping: true,
+            pickupVendor: item.vendor,
+            price: item.price,
+          })),
+        })
+      : await getShopifyCarrierQuote({
+          postalCode,
+          country,
+          province,
+          city,
+          address1,
+          address2,
+          items: selectedProducts.map((item) => ({
+            variantId: item.variantId,
+            sku: item.sku,
+            quantity: item.quantity,
+            grams: item.grams || 0,
+            vendor: item.vendor,
+          })),
+        });
 
   const productsSubtotal = selectedProducts.reduce(
     (sum, item) => sum + Number(item.price || 0) * item.quantity,
@@ -751,8 +771,7 @@ export async function action({ request }: any) {
       sourceBreakdown,
       lineItems: selectedProducts.map((product) => ({
         ...product,
-        variantId:
-          products.find((entry) => entry.sku === product.sku)?.variantId || null,
+        variantId: product.variantId || null,
         audience: quoteAudience,
         contractorTier: quoteAudience === "contractor" ? contractorTier : null,
         pricingLabel,

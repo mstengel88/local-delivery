@@ -5,7 +5,9 @@ import {
 } from "../lib/custom-quotes.server";
 import { hasAdminQuoteAccess } from "../lib/admin-quote-auth.server";
 import { getQuote } from "../lib/quote-engine.server";
+import { getShopifyCarrierQuote } from "../lib/shopify-carrier-quote.server";
 import { getBestQuoteTaxRateForAddress } from "../lib/quote-tax.server";
+import { getProductOptionsFromSupabase } from "../lib/quote-products.server";
 
 function normalizeQuantity(value: FormDataEntryValue | null) {
   const quantity = Number(value || 0);
@@ -95,22 +97,48 @@ export async function action({ request }: { request: Request }) {
     (sum, line) => sum + Number(line.price || 0) * Number(line.quantity || 0),
     0,
   );
-  const deliveryQuote = await getQuote({
-    shop: existing.shop || process.env.SHOPIFY_STORE_DOMAIN || "darfaz-2e.myshopify.com",
-    postalCode,
-    country,
-    province,
-    city,
-    address1,
-    address2,
-    items: lineItems.map((line) => ({
-      sku: line.sku,
-      quantity: Number(line.quantity || 0),
-      requiresShipping: true,
-      pickupVendor: line.vendor,
-      price: Number(line.price || 0),
-    })),
-  });
+  const isCustomQuote = lineItems.some((line) => line.audience === "custom");
+  const productOptions = isCustomQuote
+    ? []
+    : await getProductOptionsFromSupabase();
+  const deliveryQuote = isCustomQuote
+    ? await getQuote({
+        shop:
+          existing.shop ||
+          process.env.SHOPIFY_STORE_DOMAIN ||
+          "darfaz-2e.myshopify.com",
+        postalCode,
+        country,
+        province,
+        city,
+        address1,
+        address2,
+        items: lineItems.map((line) => ({
+          sku: line.sku,
+          quantity: Number(line.quantity || 0),
+          requiresShipping: true,
+          pickupVendor: line.vendor,
+          price: Number(line.price || 0),
+        })),
+      })
+    : await getShopifyCarrierQuote({
+        postalCode,
+        country,
+        province,
+        city,
+        address1,
+        address2,
+        items: lineItems.map((line) => ({
+          variantId:
+            line.variantId ||
+            productOptions.find((product) => product.sku === line.sku)?.variantId,
+          sku: line.sku,
+          quantity: Number(line.quantity || 0),
+          grams:
+            productOptions.find((product) => product.sku === line.sku)?.grams,
+          vendor: line.vendor,
+        })),
+      });
   const deliveryAmount = Number(deliveryQuote.cents || 0) / 100;
   const taxRate = (await getBestQuoteTaxRateForAddress({
     address1,
