@@ -51,8 +51,13 @@ export async function action({ request }: ActionFunctionArgs) {
       quantity: line.quantity ?? 0,
       grams: line.grams ?? 0,
       price: line.price ?? 0,
-      requiresShipping: true,
-      productVendor: line.vendor || line.product_vendor || "",
+      requiresShipping: line.requiresShipping ?? line.requires_shipping ?? true,
+      pickupVendor:
+        line.pickupVendor ||
+        line.pickup_vendor ||
+        line.vendor ||
+        line.product_vendor ||
+        "",
     })),
   });
 
@@ -67,6 +72,7 @@ export async function action({ request }: ActionFunctionArgs) {
       outsideDeliveryMiles: quote.outsideDeliveryMiles ?? 0,
       outsideDeliveryRadius: quote.outsideDeliveryRadius ?? 50,
       outsideDeliveryPhone: quote.outsideDeliveryPhone ?? "(262) 345-4001",
+      calculator: "shopify-local-delivery",
     },
     { headers: corsHeaders },
   );
