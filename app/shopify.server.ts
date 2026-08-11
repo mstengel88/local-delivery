@@ -7,10 +7,26 @@ import {
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
 import { ensureProductOptionsFresh } from "./lib/quote-products.server";
+import { ensureShopifyOfflineSession } from "./lib/shopify-client-credentials-session.server";
 
 console.log("SHOPIFY_APP_URL =", process.env.SHOPIFY_APP_URL);
 console.log("APP_URL =", process.env.APP_URL);
 console.log("HOST =", process.env.HOST);
+
+const prismaSessionStorage = new PrismaSessionStorage(prisma);
+const refreshingSessionStorage = {
+  storeSession: prismaSessionStorage.storeSession.bind(prismaSessionStorage),
+  loadSession: async (id: string) => {
+    if (id.startsWith("offline_")) {
+      await ensureShopifyOfflineSession(prisma, id.slice("offline_".length));
+    }
+    return prismaSessionStorage.loadSession(id);
+  },
+  deleteSession: prismaSessionStorage.deleteSession.bind(prismaSessionStorage),
+  deleteSessions: prismaSessionStorage.deleteSessions.bind(prismaSessionStorage),
+  findSessionsByShop:
+    prismaSessionStorage.findSessionsByShop.bind(prismaSessionStorage),
+};
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY!,
@@ -19,7 +35,7 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
-  sessionStorage: new PrismaSessionStorage(prisma),
+  sessionStorage: refreshingSessionStorage as never,
   distribution: AppDistribution.AppStore,
   isEmbeddedApp: true,
   future: {
