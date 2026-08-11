@@ -27,6 +27,7 @@ export default [
   route("api/update-quote", "routes/api.update-quote.ts"),
   route("api/unit-labels", "routes/api.unit-labels.ts"),
   route("api/internal/shopify-graphql", "routes/api.internal.shopify-graphql.ts"),
+  route("healthz", "routes/healthz.ts"),
 
   route("app/api/shipping-estimate", "routes/app.api.shipping-estimate.ts"),
   route("app/api/carrier-service", "routes/app.api.carrier-service.ts"),

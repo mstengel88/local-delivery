@@ -12,3 +12,6 @@ coverage
 .DS_Store
 extensions/**/dist
 extensions/**/build
+dispatch-v2-sandbox
+deploy-artifacts
+docs

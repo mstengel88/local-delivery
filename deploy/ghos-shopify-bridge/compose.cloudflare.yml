@@ -1,0 +1,13 @@
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: ghos-shopify-bridge-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file:
+      - ./cloudflare.env
+    depends_on:
+      shopify-bridge:
+        condition: service_healthy
+    networks:
+      - ghos-internal

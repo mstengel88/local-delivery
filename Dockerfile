@@ -36,7 +36,12 @@ COPY --from=build /app/build ./build
 COPY --from=build /app/app ./app
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/public ./public
+COPY docker/entrypoint.sh /usr/local/bin/local-delivery-entrypoint
+
+RUN npm prune --omit=dev --legacy-peer-deps \
+    && chmod 0755 /usr/local/bin/local-delivery-entrypoint
 
 EXPOSE 3000
 
+ENTRYPOINT ["local-delivery-entrypoint"]
 CMD ["npm", "run", "start"]
