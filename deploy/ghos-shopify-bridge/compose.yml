@@ -10,6 +10,7 @@ services:
     restart: unless-stopped
     env_file:
       - ./bridge.env
+      - ./gateway.env
     environment:
       NODE_ENV: production
       PORT: 3000

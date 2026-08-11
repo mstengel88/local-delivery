@@ -29,6 +29,8 @@ are not separate GHOS containers.
 - `compose.cloudflare.yml`: optional production Cloudflare connector, enabled
   only at hostname cutover.
 - `bridge.env.example`: required configuration names without secret values.
+- `gateway.env.example`: the shared private gateway secret, kept separate so it
+  can be copied directly from the Dispatch v2 runtime without printing it.
 - `cloudflare.env.example`: Cloudflare tunnel token placeholder.
 
 ## Deployment outline

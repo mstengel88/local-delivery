@@ -19,6 +19,7 @@ database.sqlite
 # GHOS Shopify bridge deployment secrets
 /deploy/ghos-shopify-bridge/bridge.env
 /deploy/ghos-shopify-bridge/cloudflare.env
+/deploy/ghos-shopify-bridge/gateway.env
 
 
 
