@@ -431,6 +431,7 @@ h2 {
 .stopActions button,
 .assignRow select,
 .routeSelector select,
+.routeDriverPicker select,
 .fieldCard input,
 .fieldCard textarea,
 .attachmentForm input,
@@ -512,6 +513,32 @@ h2 {
   text-decoration: none;
 }
 
+.dateJumpBar .toolbarButton {
+  border: 1px solid rgba(251, 146, 60, 0.55);
+  border-radius: 999px;
+  background: linear-gradient(135deg, #f97316, #fb7185);
+  color: #fff;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 950;
+  padding: 8px 14px;
+}
+
+.dateJumpBar .manualAddToggle {
+  border-color: rgba(34, 197, 94, 0.5);
+  background: linear-gradient(135deg, #059669, #0891b2);
+}
+
+.dateJumpBar .clearBoardToggle {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: linear-gradient(135deg, #7f1d1d, #dc2626);
+}
+
+.dateJumpBar .toolbarButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .dateJumpBar span {
   color: #94a3b8;
   font-size: 0.9rem;
@@ -527,6 +554,29 @@ h2 {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   width: 100%;
+}
+
+.routeDriverPicker {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(15, 23, 42, 0.72);
+  padding: 10px 14px 12px;
+}
+
+.routeDriverPicker label {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 5px;
+  color: #94a3b8;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.routeDriverPicker select {
+  width: 100%;
+  min-width: 0;
 }
 
 .rtFilterGroup {
@@ -552,6 +602,21 @@ h2 {
   background: #020617;
   color: #f8fafc;
   padding: 10px 12px;
+}
+
+.routeCleanupActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.routeCleanupActions button {
+  white-space: nowrap;
+}
+
+.routeCleanupActions .dangerButton {
+  border: 0;
 }
 
 .routeTimingLine {
@@ -589,6 +654,147 @@ h2 {
   grid-template-columns: minmax(320px, 0.8fr) minmax(420px, 1.2fr);
   gap: 16px;
   align-items: start;
+}
+
+.singleCreation {
+  grid-template-columns: minmax(420px, 1fr);
+}
+
+.addRoutePanel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  align-items: end;
+  gap: 10px;
+  border: 1px solid rgba(251, 146, 60, 0.28);
+  background: rgba(15, 23, 42, 0.86);
+  padding: 12px;
+}
+
+.addRouteHeading {
+  display: grid;
+  gap: 4px;
+}
+
+.addRouteHeading strong {
+  color: #f8fafc;
+  font-size: 0.9rem;
+}
+
+.addRoutePanel label {
+  display: grid;
+  gap: 5px;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.addRoutePanel input,
+.addRoutePanel select {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 12px;
+  background: #020617;
+  color: #f8fafc;
+  padding: 10px 12px;
+}
+
+.addRoutePanel button {
+  min-width: 150px;
+  padding: 11px 14px;
+}
+
+.addManualOrderPanel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  align-items: start;
+  gap: 12px;
+  border: 1px solid rgba(34, 197, 94, 0.24);
+  background: rgba(15, 23, 42, 0.88);
+  padding: 14px;
+}
+
+.boardFormModal {
+  width: min(960px, 100%);
+  max-height: min(88vh, 820px);
+  overflow: auto;
+  box-shadow: 0 32px 90px rgba(0, 0, 0, 0.58);
+}
+
+.addRoutePanel.boardFormModal {
+  width: min(620px, 100%);
+}
+
+.modalFormHeader {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  margin: -2px -2px 4px;
+  padding: 2px 2px 12px;
+}
+
+.modalCloseButton {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.76);
+  color: #e2e8f0;
+  cursor: pointer;
+  font-weight: 900;
+  padding: 10px 14px;
+}
+
+.manualOrderHeading {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
+.manualOrderHeading strong {
+  color: #f8fafc;
+  font-size: 1rem;
+}
+
+.addManualOrderPanel label {
+  display: grid;
+  gap: 6px;
+  color: #94a3b8;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.addManualOrderPanel input,
+.addManualOrderPanel select,
+.addManualOrderPanel textarea {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 12px;
+  background: #020617;
+  color: #f8fafc;
+  font-size: 0.95rem;
+  letter-spacing: 0;
+  padding: 10px 12px;
+  text-transform: none;
+}
+
+.addManualOrderPanel textarea {
+  resize: vertical;
+}
+
+.addManualOrderPanel .wideField {
+  grid-column: span 2;
+}
+
+.addManualOrderPanel button {
+  align-self: end;
+  min-height: 44px;
 }
 
 .compactCreation {
@@ -806,12 +1012,46 @@ h2 {
   white-space: normal;
 }
 
+.routeOrderNotes {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  border-left: 3px solid rgba(56, 189, 248, 0.35);
+  color: #cbd5e1 !important;
+  line-height: 1.35;
+  padding: 2px 0 2px 8px;
+}
+
+.routeOrderNotes strong {
+  color: #7dd3fc;
+}
+
 .assignRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
   margin-top: 6px;
 }
 
 .assignRow select {
   width: 100%;
+}
+
+.queueDetailsButton {
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #e2e8f0;
+  font-weight: 900;
+  padding: 10px 12px;
+}
+
+.queueDetailsButton:hover {
+  border-color: rgba(56, 189, 248, 0.55);
+  color: #7dd3fc;
 }
 
 .stopRow {
@@ -968,6 +1208,34 @@ h2 {
   grid-column: 1 / -1;
 }
 
+.detailFieldHeader {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.detailsMapButton {
+  border: 1px solid rgba(56, 189, 248, 0.36);
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.12);
+  color: #7dd3fc;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  padding: 7px 10px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.detailsMapButton:hover {
+  border-color: rgba(56, 189, 248, 0.7);
+  background: rgba(14, 165, 233, 0.2);
+}
+
 .orderDetailsGrid span {
   color: #94a3b8;
   font-size: 0.7rem;
@@ -1002,6 +1270,27 @@ h2 {
 
 .driverStop {
   display: grid;
+}
+
+.loaderDriverNotice {
+  display: grid;
+  gap: 6px;
+  margin: 16px;
+  padding: 16px;
+  border: 1px solid rgba(34, 197, 94, 0.45);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.18), rgba(14, 165, 233, 0.12));
+}
+
+.loaderDriverNotice h3 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 1.2rem;
+}
+
+.loaderDriverNotice p,
+.loaderDriverNotice small {
+  color: #cbd5e1;
 }
 
 .driverPage {
@@ -1066,6 +1355,16 @@ h2 {
   grid-column: 1 / -1;
 }
 
+.driverLoadedQuantityTile {
+  border-color: rgba(34, 197, 94, 0.4) !important;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.14), rgba(14, 165, 233, 0.08)) !important;
+}
+
+.driverLoadedQuantityTile strong {
+  color: #86efac;
+  font-size: clamp(1.15rem, 4vw, 1.8rem);
+}
+
 .driverNotesTile {
   grid-column: 1 / -1;
 }
@@ -1079,6 +1378,147 @@ h2 {
   display: grid;
   gap: 12px;
   padding: 16px;
+}
+
+.driverLockedCard {
+  border: 1px solid rgba(251, 146, 60, 0.32);
+  background: linear-gradient(135deg, rgba(251, 146, 60, 0.12), rgba(15, 23, 42, 0.82));
+}
+
+.driverLockedCard h3 {
+  margin: 0;
+  color: #f8fafc;
+}
+
+.driverLockedCard p {
+  color: #cbd5e1;
+}
+
+.driverLoadedSummary {
+  display: grid;
+  gap: 14px;
+  margin: 0 16px 16px;
+  padding: 16px;
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.16), rgba(15, 23, 42, 0.86));
+}
+
+.driverLoadedSummary h3 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: clamp(1.35rem, 5vw, 2rem);
+}
+
+.driverLoadedSummary p {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.ticketCreatorButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 12px 18px;
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.2), rgba(34, 197, 94, 0.18));
+  color: #bae6fd;
+  font-weight: 950;
+  text-decoration: none;
+}
+
+.loaderTicketButton {
+  margin-top: 6px;
+}
+
+.ticketPreviewOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: clamp(12px, 3vw, 32px);
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(10px);
+}
+
+.ticketPreviewModal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1120px, 100%);
+  min-height: min(880px, 100%);
+  overflow: hidden;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 28px;
+  background: #07111f;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.48);
+}
+
+.ticketPreviewHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(8, 47, 73, 0.9));
+}
+
+.ticketPreviewHeader h2 {
+  margin: 4px 0 0;
+  color: #f8fafc;
+  font-size: clamp(1.3rem, 3vw, 2rem);
+}
+
+.ticketPreviewModal iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 620px;
+  border: 0;
+  background: #fff;
+}
+
+@media (max-width: 720px) {
+  .ticketPreviewOverlay {
+    padding: 8px;
+  }
+
+  .ticketPreviewModal {
+    min-height: 92vh;
+    border-radius: 20px;
+  }
+
+  .ticketPreviewHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+.loaderActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.loaderTopActions {
+  align-items: center;
+}
+
+.loaderColorToggle {
+  border: 1px solid rgba(251, 146, 60, 0.5);
+  border-radius: 999px;
+  background: linear-gradient(135deg, #f97316, #facc15);
+  color: #111827;
+  cursor: pointer;
+  font-weight: 950;
+  min-height: 52px;
+  padding: 14px 22px;
+  text-transform: uppercase;
 }
 
 .fieldCard label,
@@ -1098,6 +1538,103 @@ h2 {
   font-size: 1rem;
   letter-spacing: 0;
   text-transform: none;
+}
+
+.loaderForm .loaderQuantityInput {
+  border-width: 2px;
+  font-size: clamp(2rem, 7vw, 4.5rem);
+  font-weight: 950;
+  min-height: 92px;
+  padding: 18px 20px;
+  text-align: center;
+}
+
+.loaderForm .loaderQuantityInput::-webkit-outer-spin-button,
+.loaderForm .loaderQuantityInput::-webkit-inner-spin-button {
+  margin: 0;
+  opacity: 1;
+}
+
+.loaderSunnyMode {
+  background:
+    radial-gradient(circle at top left, rgba(250, 204, 21, 0.35), transparent 28rem),
+    linear-gradient(135deg, #f8fafc, #fde68a 52%, #fdba74);
+  color: #111827;
+}
+
+.loaderSunnyMode .topbar,
+.loaderSunnyMode .panel,
+.loaderSunnyMode .loadCard,
+.loaderSunnyMode .notice,
+.loaderSunnyMode .loaderForm {
+  background: rgba(255, 255, 255, 0.94);
+  border-color: rgba(17, 24, 39, 0.45);
+  box-shadow: 0 20px 50px rgba(17, 24, 39, 0.18);
+}
+
+.loaderSunnyMode h1,
+.loaderSunnyMode h2,
+.loaderSunnyMode .loadBody strong,
+.loaderSunnyMode .loadBody p,
+.loaderSunnyMode .detailGrid strong,
+.loaderSunnyMode .driverLockedCard h3 {
+  color: #020617;
+}
+
+.loaderSunnyMode .muted,
+.loaderSunnyMode .detailGrid span,
+.loaderSunnyMode .fieldCard label,
+.loaderSunnyMode .loaderForm label,
+.loaderSunnyMode .loadBody span,
+.loaderSunnyMode .loadBody small {
+  color: #334155;
+}
+
+.loaderSunnyMode .eyebrow {
+  color: #c2410c;
+}
+
+.loaderSunnyMode .statusBadge {
+  background: #16a34a;
+  border-color: #166534;
+  color: #fff;
+}
+
+.loaderSunnyMode input,
+.loaderSunnyMode textarea,
+.loaderSunnyMode select {
+  background: #fff;
+  border-color: #1e293b;
+  color: #020617;
+}
+
+.loaderSunnyMode .loaderQuantityInput {
+  background: #fff7ed;
+  border-color: #ea580c;
+  color: #111827;
+}
+
+.loaderSunnyMode .secondaryButton {
+  background: #111827;
+  border-color: #111827;
+  color: #fff;
+}
+
+.loaderSunnyMode .primaryButton {
+  background: linear-gradient(135deg, #16a34a, #0f766e);
+  color: #fff;
+}
+
+.loaderSunnyMode .ticketCreatorButton {
+  background: #0f172a;
+  border-color: #0369a1;
+  color: #fff;
+}
+
+.loaderSunnyMode .loaderColorToggle {
+  background: #111827;
+  border-color: #111827;
+  color: #fff;
 }
 
 .primaryButton,
@@ -2818,13 +3355,16 @@ h2 {
   .routeSelector,
   .dayFilter,
   .detailGrid,
-    .auditHeader,
-    .jsonGrid,
-    .timingLayout,
-    .routeCreateFields,
-    .orderCreateFields,
-    .orderEditFields,
-    .editorActions {
+  .loaderActions,
+  .addRoutePanel,
+  .addManualOrderPanel,
+  .auditHeader,
+  .jsonGrid,
+  .timingLayout,
+  .routeCreateFields,
+  .orderCreateFields,
+  .orderEditFields,
+  .editorActions {
     display: grid;
     grid-template-columns: 1fr;
   }
@@ -2839,6 +3379,10 @@ h2 {
 
   .orderBrowser {
     position: static;
+  }
+
+  .addManualOrderPanel .wideField {
+    grid-column: auto;
   }
 
   .deliveredListPanel {

@@ -11,12 +11,18 @@ import {
 import {
   loadDispatchOperationalSettings,
   loadLoaderState,
-  markLoadPrepared,
+  markLoadStarted,
+  markStopEnroute,
   type DispatchOrder,
 } from "../lib/dispatch.server";
 import { requireDispatchUser } from "../lib/auth.server";
 import { PermissionNav } from "../components/PermissionNav";
 import { useDispatchVersionRevalidator } from "../components/useDispatchVersionRevalidator";
+import {
+  DEFAULT_TICKET_CREATOR_URL,
+  buildLoaderTicketCreatorUrl,
+  loaderTicketPo,
+} from "../lib/ticket-creator";
 
 export async function loader({ request }: { request: Request }) {
   await requireDispatchUser(request, "loader");
@@ -31,6 +37,7 @@ export async function loader({ request }: { request: Request }) {
   ]);
   return data({
     ...loaderState,
+    ticketCreatorUrl: process.env.LOADER_TICKET_CREATOR_URL || process.env.TICKET_CREATOR_URL || DEFAULT_TICKET_CREATOR_URL,
     operations: {
       refreshSeconds: operations?.mapRefreshSeconds || 15,
     },
@@ -45,20 +52,51 @@ export function shouldRevalidate({ actionResult, defaultShouldRevalidate }: any)
 export async function action({ request }: { request: Request }) {
   await requireDispatchUser(request, "loader");
   const form = await request.formData();
+  const intent = String(form.get("intent") || "loading");
   const orderId = String(form.get("orderId") || "").trim();
   const loaderNote = String(form.get("loaderNote") || "").trim();
+  const loadedQuantity = String(form.get("loadedQuantity") || "").trim().replace(",", ".");
 
   if (!orderId) {
     return data({ ok: false, message: "Missing load." }, { status: 400 });
   }
 
-  const updatedOrder = await markLoadPrepared(orderId, loaderNote);
+  if (intent === "loading") {
+    const updatedOrder = await markLoadStarted(orderId, loaderNote);
+    return data({
+      ok: true,
+      intent,
+      message: "Driver notified that loading has started.",
+      updatedOrder,
+      skipLoaderRevalidate: true,
+    });
+  }
+
+  if (intent === "submit-loaded") {
+    if (!loadedQuantity) {
+      return data({ ok: false, message: "Enter the total loaded before submitting." }, { status: 400 });
+    }
+    if (!/^\d+(\.\d{1,2})?$/.test(loadedQuantity)) {
+      return data({ ok: false, message: "Enter loaded quantity in 4.10 format." }, { status: 400 });
+    }
+    const updatedOrder = await markStopEnroute(orderId, loadedQuantity, {
+      actor: "loader",
+      loaderNote,
+      markLoaderPrepared: true,
+    });
+    return data({
+      ok: true,
+      intent,
+      message: "Loaded quantity submitted. Driver route is now enroute.",
+      updatedOrder,
+      skipLoaderRevalidate: true,
+    });
+  }
+
   return data({
-    ok: true,
-    message: "Load marked prepared.",
-    updatedOrder,
-    skipLoaderRevalidate: true,
-  });
+    ok: false,
+    message: "Unknown loader action.",
+  }, { status: 400 });
 }
 
 function orderNumber(order: DispatchOrder) {
@@ -74,12 +112,31 @@ function checklistValue(order: DispatchOrder, key: string) {
   }
 }
 
+const LOADER_QUANTITY_DRAFTS_KEY = "dispatchLoaderQuantityDrafts";
+
+function readLoaderQuantityDrafts() {
+  try {
+    return JSON.parse(window.localStorage.getItem(LOADER_QUANTITY_DRAFTS_KEY) || "{}") as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function writeLoaderQuantityDrafts(drafts: Record<string, string>) {
+  window.localStorage.setItem(LOADER_QUANTITY_DRAFTS_KEY, JSON.stringify(drafts));
+}
+
 export default function LoaderBoard() {
   const loaderData = useLoaderData<typeof loader>();
   const [loaderState, setLoaderState] = useState(loaderData);
+  const [sunnyMode, setSunnyMode] = useState(false);
+  const [quantityDrafts, setQuantityDrafts] = useState<Record<string, string>>({});
+  const [ticketPreview, setTicketPreview] = useState<{ url: string; po: string } | null>(null);
   const { routeLoads, totalWaiting } = loaderState;
+  const ticketCreatorUrl = loaderData.ticketCreatorUrl || DEFAULT_TICKET_CREATOR_URL;
   const actionData = useActionData<typeof action>() as {
     ok?: boolean;
+    intent?: string;
     message?: string;
     updatedOrder?: DispatchOrder;
   } | undefined;
@@ -89,16 +146,34 @@ export default function LoaderBoard() {
   const [showPreparedPopup, setShowPreparedPopup] = useState(false);
 
   useEffect(() => {
+    setSunnyMode(window.localStorage.getItem("loaderColorMode") === "sunny");
+    setQuantityDrafts(readLoaderQuantityDrafts());
+  }, []);
+
+  useEffect(() => {
     setLoaderState(loaderData);
   }, [loaderData]);
 
   useEffect(() => {
     if (actionData?.ok !== true || !actionData.updatedOrder) return;
-    setShowPreparedPopup(true);
+    if (actionData.intent === "submit-loaded") setShowPreparedPopup(true);
+    if (actionData.intent === "submit-loaded") {
+      setQuantityDrafts((current) => {
+        const next = { ...current };
+        delete next[actionData.updatedOrder!.id];
+        writeLoaderQuantityDrafts(next);
+        return next;
+      });
+    }
     setLoaderState((current) => {
-      const routeLoads = current.routeLoads.filter(
-        (entry) => entry.nextLoad?.id !== actionData.updatedOrder?.id,
-      );
+      const routeLoads =
+        actionData.intent === "submit-loaded"
+          ? current.routeLoads.filter((entry) => entry.nextLoad?.id !== actionData.updatedOrder?.id)
+          : current.routeLoads.map((entry) =>
+              entry.nextLoad?.id === actionData.updatedOrder?.id
+                ? { ...entry, nextLoad: actionData.updatedOrder }
+                : entry,
+            );
 
       return {
         ...current,
@@ -122,15 +197,49 @@ export default function LoaderBoard() {
     return () => window.clearInterval(interval);
   }, [loaderData.operations?.refreshSeconds, revalidator]);
 
+  const toggleSunnyMode = () => {
+    setSunnyMode((current) => {
+      const next = !current;
+      window.localStorage.setItem("loaderColorMode", next ? "sunny" : "dark");
+      return next;
+    });
+  };
+
+  const updateQuantityDraft = (orderId: string, value: string) => {
+    setQuantityDrafts((current) => {
+      const next = { ...current, [orderId]: value };
+      if (!value.trim()) delete next[orderId];
+      writeLoaderQuantityDrafts(next);
+      return next;
+    });
+  };
+
+  const formatQuantityDraft = (orderId: string, value: string) => {
+    const normalized = value.trim().replace(",", ".");
+    if (!normalized) {
+      updateQuantityDraft(orderId, "");
+      return;
+    }
+
+    const numeric = Number(normalized);
+    if (!Number.isFinite(numeric)) return;
+    updateQuantityDraft(orderId, numeric.toFixed(2));
+  };
+
   return (
-    <main className="page">
+    <main className={sunnyMode ? "page loaderPage loaderSunnyMode" : "page loaderPage"}>
       <header className="topbar">
         <div>
           <p className="eyebrow">Loader Mode</p>
           <h1>Next Loads</h1>
           <p className="muted">{totalWaiting} route{totalWaiting === 1 ? "" : "s"} waiting for material prep.</p>
         </div>
-        <PermissionNav />
+        <div className="topbarActions loaderTopActions">
+          <button type="button" className="loaderColorToggle" onClick={toggleSunnyMode}>
+            {sunnyMode ? "Dark Mode" : "Sunny Mode"}
+          </button>
+          <PermissionNav />
+        </div>
       </header>
 
       {(actionData?.message || navigation.state !== "idle") ? (
@@ -159,11 +268,33 @@ export default function LoaderBoard() {
         </div>
       ) : null}
 
+      {ticketPreview ? (
+        <div className="ticketPreviewOverlay" role="dialog" aria-modal="true" aria-label={`Loader ticket ${ticketPreview.po}`}>
+          <div className="ticketPreviewModal">
+            <div className="ticketPreviewHeader">
+              <div>
+                <p className="eyebrow">Loader Ticket</p>
+                <h2>PO #{ticketPreview.po}</h2>
+              </div>
+              <button type="button" className="modalCloseButton" onClick={() => setTicketPreview(null)}>
+                Close
+              </button>
+            </div>
+            <iframe title={`Loader ticket ${ticketPreview.po}`} src={ticketPreview.url} />
+          </div>
+        </div>
+      ) : null}
+
       <section className="loaderGrid">
         {routeLoads.map(({ route, nextLoad }) => {
           if (!nextLoad) return null;
           const preparedAt = checklistValue(nextLoad, "loaderPreparedAt");
+          const loadingAt = checklistValue(nextLoad, "loaderLoadingAt");
           const loaderNote = checklistValue(nextLoad, "loaderNote");
+          const loadedQuantity = checklistValue(nextLoad, "loaderLoadedQuantity") || checklistValue(nextLoad, "loadedQuantity");
+          const quantityDraft = quantityDrafts[nextLoad.id] ?? loadedQuantity;
+          const ticketUrl = buildLoaderTicketCreatorUrl(ticketCreatorUrl, nextLoad, route, loadedQuantity, { embed: true });
+          const ticketPo = loaderTicketPo(nextLoad);
 
           return (
             <article key={`${route.id}-${nextLoad.id}`} className="panel loadCard">
@@ -173,25 +304,56 @@ export default function LoaderBoard() {
                   <h2>{route.truck || "No truck"} · {route.driver || "No driver"}</h2>
                   <p className="muted">{route.shift || "No shift"} · {route.region || "No region"}</p>
                 </div>
-                <span className="statusBadge">{preparedAt ? "Prepared" : "Next"}</span>
+                <span className="statusBadge">{preparedAt ? "Enroute" : loadingAt ? "Loading" : "Next"}</span>
               </div>
 
               <div className="loadBody">
                 <strong>{orderNumber(nextLoad)} · {nextLoad.customer || "No customer"}</strong>
                 <p>{nextLoad.quantity} {nextLoad.unit} {nextLoad.material}</p>
                 <span>{nextLoad.address}, {nextLoad.city}</span>
+                {loadingAt ? <small>Driver message sent: loading this order now.</small> : null}
+                {loadedQuantity ? <small>Total loaded: {loadedQuantity}</small> : null}
                 {loaderNote ? <small>Loader note: {loaderNote}</small> : null}
+                {loadingAt || loadedQuantity ? (
+                  <button
+                    type="button"
+                    className="ticketCreatorButton loaderTicketButton"
+                    onClick={() => setTicketPreview({ url: ticketUrl, po: ticketPo })}
+                  >
+                    View Loader Ticket · PO #{ticketPo}
+                  </button>
+                ) : null}
               </div>
 
-              <Form method="post" className="loaderForm">
+              <Form method="post" className="loaderForm" noValidate>
                 <input type="hidden" name="orderId" value={nextLoad.id} />
                 <label>
-                  Loader note
-                  <input name="loaderNote" placeholder="Example: staged by bay 2" defaultValue={loaderNote} />
+                  Message to driver
+                  <input name="loaderNote" placeholder="Example: loading 10 yards into truck 308" defaultValue={loaderNote} />
                 </label>
-                <button type="submit" className="primaryButton">
-                  {preparedAt ? "Update Load Note" : "Mark Load Prepared"}
-                </button>
+                <label>
+                  Total loaded
+                  <input
+                    className="loaderQuantityInput"
+                    name="loadedQuantity"
+                    type="tel"
+                    placeholder="Example: 4.10"
+                    value={quantityDraft}
+                    onChange={(event) => updateQuantityDraft(nextLoad.id, event.currentTarget.value)}
+                    onBlur={(event) => formatQuantityDraft(nextLoad.id, event.currentTarget.value)}
+                    inputMode="decimal"
+                    autoComplete="off"
+                    enterKeyHint="done"
+                  />
+                </label>
+                <div className="loaderActions">
+                  <button type="submit" name="intent" value="loading" className="secondaryButton">
+                    {loadingAt ? "Update Loading Message" : "Loading"}
+                  </button>
+                  <button type="submit" name="intent" value="submit-loaded" className="primaryButton">
+                    Done Loading
+                  </button>
+                </div>
               </Form>
             </article>
           );
