@@ -9,7 +9,7 @@
     "typecheck": "react-router typegen && tsc --noEmit",
     "ios:add": "cap add ios",
     "ios:sync": "npm run build && cap sync ios",
-    "ios:open": "cap open ios"
+    "ios:open": "open \"ios/App/GreenHills Dispatch.xcworkspace\""
   },
   "dependencies": {
     "@capacitor/geolocation": "^8.2.0",

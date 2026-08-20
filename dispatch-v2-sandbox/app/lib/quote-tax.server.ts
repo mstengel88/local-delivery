@@ -29,6 +29,7 @@ const SAMPLE_TAXABLE_AMOUNT = 100;
 
 let cachedShopifyAccessToken = "";
 let cachedShopifyAccessTokenExpiresAt = 0;
+let cachedShopifyAccessTokenSource = "";
 
 const supabaseRealtimeTransport = WebSocket as unknown as NonNullable<
   RealtimeClientOptions["transport"]
@@ -48,6 +49,35 @@ const supabase =
 
 function normalizeShopDomain(value: string) {
   return value.replace(/^https?:\/\//, "").replace(/\/.*$/, "").trim();
+}
+
+function responsePreview(value: string) {
+  return value.replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
+async function readJsonResponse<T>(response: Response, context: string) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const contentType = response.headers.get("content-type") || "unknown content-type";
+    throw new Error(
+      `${context} returned ${response.status} ${response.statusText} as ${contentType}, not JSON. ${responsePreview(text)}`,
+    );
+  }
+}
+
+function normalizeShopifyErrors(errors: unknown): Array<{ message?: unknown }> {
+  if (Array.isArray(errors)) {
+    return errors.filter(Boolean) as Array<{ message?: unknown }>;
+  }
+  if (errors && typeof errors === "object") {
+    return [errors as { message?: unknown }];
+  }
+  if (typeof errors === "string" && errors.trim()) {
+    return [{ message: errors }];
+  }
+  return [];
 }
 
 function normalizeText(value?: string | null) {
@@ -102,13 +132,17 @@ function taxFallback(address: QuoteTaxAddress): QuoteTaxRateMatch {
 
 async function getShopifyAccessToken() {
   if (SHOPIFY_ADMIN_ACCESS_TOKEN) return SHOPIFY_ADMIN_ACCESS_TOKEN;
-  if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
-    throw new Error("Missing Shopify credentials for tax lookup.");
-  }
 
   const now = Date.now();
   if (cachedShopifyAccessToken && cachedShopifyAccessTokenExpiresAt > now + 60_000) {
     return cachedShopifyAccessToken;
+  }
+
+  const sessionToken = await getInstalledShopifySessionAccessToken();
+  if (sessionToken) return sessionToken;
+
+  if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
+    throw new Error("Missing Shopify credentials for tax lookup.");
   }
 
   const body = new URLSearchParams({
@@ -122,12 +156,12 @@ async function getShopifyAccessToken() {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
   });
-  const payload = (await response.json()) as {
+  const payload = await readJsonResponse<{
     access_token?: string;
     expires_in?: number;
     error?: string;
     error_description?: string;
-  };
+  }>(response, "Shopify tax token request");
 
   if (!response.ok || !payload.access_token) {
     throw new Error(payload.error_description || payload.error || `Shopify token request failed with HTTP ${response.status}.`);
@@ -135,6 +169,43 @@ async function getShopifyAccessToken() {
 
   cachedShopifyAccessToken = payload.access_token;
   cachedShopifyAccessTokenExpiresAt = now + Number(payload.expires_in || 86400) * 1000;
+  cachedShopifyAccessTokenSource = "client-credentials";
+  return cachedShopifyAccessToken;
+}
+
+async function getInstalledShopifySessionAccessToken() {
+  if (!supabase || !SHOPIFY_SHOP_DOMAIN) return null;
+
+  const now = Date.now();
+  if (
+    cachedShopifyAccessToken &&
+    cachedShopifyAccessTokenSource === "session" &&
+    cachedShopifyAccessTokenExpiresAt > now + 60_000
+  ) {
+    return cachedShopifyAccessToken;
+  }
+
+  const shop = normalizeShopDomain(SHOPIFY_SHOP_DOMAIN);
+  const { data, error } = await supabase
+    .from("Session")
+    .select("id,shop,isOnline,accessToken")
+    .eq("shop", shop)
+    .limit(10);
+
+  if (error) return null;
+
+  const rows = Array.isArray(data) ? data : [];
+  const offlineSession =
+    rows.find((row: any) => row?.id === `offline_${shop}` && row?.accessToken) ||
+    rows.find((row: any) => row?.isOnline === false && row?.accessToken) ||
+    rows.find((row: any) => row?.accessToken);
+
+  const token = String((offlineSession as any)?.accessToken || "").trim();
+  if (!token) return null;
+
+  cachedShopifyAccessToken = token;
+  cachedShopifyAccessTokenExpiresAt = now + 10 * 60 * 1000;
+  cachedShopifyAccessTokenSource = "session";
   return cachedShopifyAccessToken;
 }
 
@@ -152,13 +223,14 @@ async function shopifyTaxGraphql<T>(query: string, variables: Record<string, unk
       body: JSON.stringify({ query, variables }),
     },
   );
-  const body = (await response.json()) as {
+  const body = await readJsonResponse<{
     data?: T;
-    errors?: Array<{ message?: string | null }>;
-  };
+    errors?: unknown;
+  }>(response, `Shopify tax GraphQL request to ${normalizeShopDomain(SHOPIFY_SHOP_DOMAIN)}`);
 
-  if (!response.ok || body.errors?.length) {
-    const message = body.errors?.map((error) => error.message).filter(Boolean).join("; ");
+  const topLevelErrors = normalizeShopifyErrors(body.errors);
+  if (!response.ok || topLevelErrors.length) {
+    const message = topLevelErrors.map((error) => String(error.message || "")).filter(Boolean).join("; ");
     throw new Error(message || `Shopify GraphQL failed with HTTP ${response.status}.`);
   }
 
@@ -230,7 +302,9 @@ async function calculateShopifyTaxRate(address: QuoteTaxAddress) {
   });
 
   const result = data.draftOrderCalculate;
-  const errors = result?.userErrors?.map((error) => error.message).filter(Boolean) || [];
+  const errors = normalizeShopifyErrors(result?.userErrors)
+    .map((error) => String(error.message || ""))
+    .filter(Boolean);
   if (errors.length) {
     throw new Error(errors.join("; "));
   }

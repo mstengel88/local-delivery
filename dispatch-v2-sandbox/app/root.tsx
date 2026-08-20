@@ -9,7 +9,7 @@ import {
   useNavigation,
   useRouteError,
 } from "react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { getCurrentDispatchUser } from "./lib/auth.server";
 import "./styles.css";
 
@@ -44,6 +44,147 @@ function PwaRegistration() {
   return null;
 }
 
+function GhosEmbeddedBridge() {
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (window.parent === window) return;
+
+    let parentOrigin: string | null = null;
+    try {
+      const referrerOrigin = new URL(document.referrer).origin;
+      if (referrerOrigin !== window.location.origin) {
+        parentOrigin = referrerOrigin;
+      }
+    } catch {
+      // GHOS identifies itself with the first direct parent message below.
+    }
+
+    document.documentElement.classList.add("ghosEmbeddedFrame");
+    let processing = false;
+    let animationFrame = 0;
+    let lastHeight = 0;
+
+    const reportHeight = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(() => {
+        const height = Math.ceil(Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight,
+        ));
+        if (height <= 0 || Math.abs(height - lastHeight) < 2) return;
+        lastHeight = height;
+        if (parentOrigin) {
+          window.parent.postMessage(
+            { type: "ghos:ticketing-content-height", height },
+            parentOrigin,
+          );
+        }
+      });
+    };
+
+    const handleMessage = async (event: MessageEvent) => {
+      if (event.source !== window.parent) return;
+      const isGhosMessage = typeof event.data?.type === "string" &&
+        event.data.type.startsWith("ghos:ticketing-");
+      if (!parentOrigin && isGhosMessage) {
+        parentOrigin = event.origin;
+      }
+      if (!parentOrigin || event.origin !== parentOrigin) return;
+
+      if (event.data?.type === "ghos:ticketing-host-viewport") {
+        const height = Number(event.data.height);
+        if (Number.isFinite(height) && height >= 320 && height <= 10000) {
+          document.documentElement.style.setProperty(
+            "--ghos-host-viewport-height",
+            `${Math.round(height)}px`,
+          );
+          reportHeight();
+        }
+        return;
+      }
+
+      if (event.data?.type !== "ghos:ticketing-sso" || processing) return;
+      const tokenHash = typeof event.data.tokenHash === "string"
+        ? event.data.tokenHash.trim()
+        : "";
+      if (tokenHash.length < 20 || tokenHash.length > 1024) {
+        setError("GHOS supplied an invalid Dispatch V2 session.");
+        return;
+      }
+
+      processing = true;
+      setError(null);
+      try {
+        const response = await fetch("/ghos-sso", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tokenHash }),
+        });
+        const result = await response.json().catch(() => null);
+        if (!response.ok || result?.ok !== true) {
+          throw new Error(result?.message || "Dispatch V2 rejected the GHOS session.");
+        }
+
+        window.parent.postMessage(
+          { type: "ghos:ticketing-sso-complete" },
+          parentOrigin,
+        );
+        window.location.reload();
+      } catch (requestError) {
+        processing = false;
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Your Dispatch V2 session could not be started. Refresh GHOS to try again.",
+        );
+      }
+    };
+
+    const resizeObserver = new ResizeObserver(reportHeight);
+    resizeObserver.observe(document.documentElement);
+    if (document.body) resizeObserver.observe(document.body);
+    const mutationObserver = new MutationObserver(reportHeight);
+    mutationObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+    });
+
+    window.addEventListener("message", handleMessage);
+    window.addEventListener("load", reportHeight);
+    window.addEventListener("resize", reportHeight);
+    window.parent.postMessage(
+      { type: "ghos:ticketing-sso-ready" },
+      parentOrigin ?? "*",
+    );
+    reportHeight();
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+      window.removeEventListener("message", handleMessage);
+      window.removeEventListener("load", reportHeight);
+      window.removeEventListener("resize", reportHeight);
+      document.documentElement.classList.remove("ghosEmbeddedFrame");
+      document.documentElement.style.removeProperty("--ghos-host-viewport-height");
+    };
+  }, []);
+
+  if (!error) return null;
+  return (
+    <div className="ghosSsoErrorOverlay" role="alert">
+      <section className="panel loginPanel">
+        <p className="eyebrow">Dispatch V2</p>
+        <h1>Single sign-on could not finish</h1>
+        <p className="muted">{error}</p>
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <html lang="en">
@@ -64,6 +205,7 @@ export default function App() {
       </head>
       <body>
         <GlobalLoadingBar />
+        <GhosEmbeddedBridge />
         <Outlet />
         <PwaRegistration />
         <ScrollRestoration />

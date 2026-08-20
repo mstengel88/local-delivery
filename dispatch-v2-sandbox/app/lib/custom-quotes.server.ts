@@ -50,6 +50,37 @@ export type SavedCustomQuote = {
   created_at: string;
 };
 
+function parseJsonArray(value: unknown): any[] {
+  if (Array.isArray(value)) return value;
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parseJsonArray(parsed);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["items", "lineItems", "line_items", "rows", "data", "values"]) {
+      const nested = record[key];
+      if (Array.isArray(nested) || typeof nested === "string") return parseJsonArray(nested);
+    }
+  }
+
+  return [];
+}
+
+export function normalizeSavedCustomQuote(row: any): SavedCustomQuote {
+  return {
+    ...row,
+    source_breakdown: parseJsonArray(row?.source_breakdown),
+    line_items: parseJsonArray(row?.line_items),
+  } as SavedCustomQuote;
+}
+
 function getCreatorPayload(input: {
   createdByUserId?: string | null;
   createdByName?: string | null;
@@ -210,7 +241,7 @@ export async function getRecentCustomQuotes(limit = 20) {
     return [];
   }
 
-  return data || [];
+  return (data || []).map(normalizeSavedCustomQuote);
 }
 
 export async function getCustomQuoteById(id: string) {
@@ -225,7 +256,7 @@ export async function getCustomQuoteById(id: string) {
     return null;
   }
 
-  return (data as SavedCustomQuote | null) || null;
+  return data ? normalizeSavedCustomQuote(data) : null;
 }
 
 export async function deleteCustomQuote(id: string) {
@@ -294,5 +325,5 @@ export async function updateCustomQuote(
     throw error;
   }
 
-  return data as SavedCustomQuote;
+  return normalizeSavedCustomQuote(data);
 }

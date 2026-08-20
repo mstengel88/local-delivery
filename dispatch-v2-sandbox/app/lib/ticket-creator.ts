@@ -1,4 +1,4 @@
-export const DEFAULT_TICKET_CREATOR_URL = "https://www.ghstickets.info";
+export const DEFAULT_TICKET_CREATOR_URL = "/api/loader-ticket-preview";
 
 type TicketOrder = {
   id: string;

@@ -10,29 +10,40 @@ import {
 } from "react-router";
 import {
   loadDriverState,
+  loadDispatchEmployeeOptions,
   loadDispatchOperationalSettings,
   markStopDelivered,
-  markStopEnroute,
   assertDriverCanAccessOrder,
   type DispatchOrder,
 } from "../lib/dispatch.server";
 import { requireDispatchUser } from "../lib/auth.server";
 import { PermissionNav } from "../components/PermissionNav";
 import { useDispatchVersionRevalidator } from "../components/useDispatchVersionRevalidator";
+import {
+  DEFAULT_TICKET_CREATOR_URL,
+  buildLoaderTicketCreatorUrl,
+  loaderTicketPo,
+} from "../lib/ticket-creator";
 
 export async function loader({ request }: { request: Request }) {
   const currentUser = await requireDispatchUser(request, "driver");
   const url = new URL(request.url);
   const requestedDate = url.searchParams.get("date");
-  const [driverState, operations] = await Promise.all([
+  const selectedDriverId = String(url.searchParams.get("driverId") || "").trim();
+  const [driverState, operations, drivers] = await Promise.all([
     loadDriverState(url.searchParams.get("route"), {
       dateKey: requestedDate === "all" ? null : requestedDate || undefined,
       includeUndated: url.searchParams.get("includeUndated") !== "0",
+      driverId: selectedDriverId,
     }, currentUser),
     loadDispatchOperationalSettings().catch(() => null),
+    loadDispatchEmployeeOptions(500),
   ]);
   return data({
     ...driverState,
+    drivers,
+    selectedDriverId: driverState.selectedDriverId || selectedDriverId,
+    ticketCreatorUrl: process.env.LOADER_TICKET_CREATOR_URL || process.env.TICKET_CREATOR_URL || DEFAULT_TICKET_CREATOR_URL,
     operations: {
       refreshSeconds: operations?.mapRefreshSeconds || 15,
       driverLocationSeconds: operations?.driverLocationSeconds || 20,
@@ -50,32 +61,17 @@ export async function action({ request }: { request: Request }) {
   const form = await request.formData();
   const intent = String(form.get("intent") || "");
   const orderId = String(form.get("orderId") || "").trim();
+  const selectedDriverId = String(form.get("driverId") || "").trim();
 
   if (!orderId) {
     return data({ ok: false, message: "Missing stop." }, { status: 400 });
   }
 
   if (intent === "enroute") {
-    const loadedQuantity = String(form.get("loadedQuantity") || "").trim();
-    if (!loadedQuantity) {
-      return data({ ok: false, message: "Enter loaded quantity before marking enroute." }, { status: 400 });
-    }
-    try {
-      await assertDriverCanAccessOrder(orderId, currentUser);
-      const updatedOrder = await markStopEnroute(orderId, loadedQuantity);
-      return data({
-        ok: true,
-        intent,
-        message: "Stop marked enroute.",
-        updatedOrder,
-        skipDriverRevalidate: true,
-      });
-    } catch (error) {
-      return data(
-        { ok: false, message: error instanceof Error ? error.message : "Unable to mark stop enroute." },
-        { status: 500 },
-      );
-    }
+    return data(
+      { ok: false, message: "Driver Enroute is locked. The loader must click Done Loading first." },
+      { status: 403 },
+    );
   }
 
   if (intent === "delivered") {
@@ -92,7 +88,7 @@ export async function action({ request }: { request: Request }) {
     }
 
     try {
-      await assertDriverCanAccessOrder(orderId, currentUser);
+      await assertDriverCanAccessOrder(orderId, currentUser, { driverId: selectedDriverId });
       const updatedOrder = await markStopDelivered(orderId, { proofName, proofNotes, gpsLocation, photoUrls });
       return data({
         ok: true,
@@ -125,6 +121,10 @@ function checklistValue(order: DispatchOrder, key: string) {
   } catch {
     return "";
   }
+}
+
+function loadedQuantityFor(order: DispatchOrder) {
+  return checklistValue(order, "loaderLoadedQuantity") || checklistValue(order, "loadedQuantity");
 }
 
 type DriverAttachment = {
@@ -260,6 +260,14 @@ export default function DriverRoute() {
   const loaderData = useLoaderData<typeof loader>();
   const [driverState, setDriverState] = useState(loaderData);
   const { routes, selectedRoute, currentStop, remainingStops } = driverState;
+  const drivers = loaderData.drivers || [];
+  const selectedDriverId = driverState.selectedDriverId || loaderData.selectedDriverId || selectedRoute?.driverId || "";
+  const ticketCreatorUrl = loaderData.ticketCreatorUrl || DEFAULT_TICKET_CREATOR_URL;
+  const currentLoadedQuantity = currentStop ? loadedQuantityFor(currentStop) : "";
+  const currentTicketUrl = currentStop
+    ? buildLoaderTicketCreatorUrl(ticketCreatorUrl, currentStop, selectedRoute, currentLoadedQuantity, { embed: true })
+    : "";
+  const [ticketPreview, setTicketPreview] = useState<{ url: string; po: string } | null>(null);
   const actionData = useActionData<typeof action>() as {
     ok?: boolean;
     intent?: string;
@@ -591,6 +599,23 @@ export default function DriverRoute() {
 
   return (
     <main className="page narrowPage driverPage">
+      {ticketPreview ? (
+        <div className="ticketPreviewOverlay" role="dialog" aria-modal="true" aria-label={`Loader ticket ${ticketPreview.po}`}>
+          <div className="ticketPreviewModal">
+            <div className="ticketPreviewHeader">
+              <div>
+                <p className="eyebrow">Loader Ticket</p>
+                <h2>PO #{ticketPreview.po}</h2>
+              </div>
+              <button type="button" className="secondaryButton" onClick={() => setTicketPreview(null)}>
+                Close
+              </button>
+            </div>
+            <iframe title={`Loader ticket ${ticketPreview.po}`} src={ticketPreview.url} />
+          </div>
+        </div>
+      ) : null}
+
       <header className="topbar driverTopbar">
         <div>
           <p className="eyebrow">Driver Mode</p>
@@ -619,7 +644,19 @@ export default function DriverRoute() {
       </div>
 
       <section className="toolbar">
+        <Form method="get" className="routeSelector driverPicker">
+          <select name="driverId" defaultValue={selectedDriverId || ""}>
+            <option value="">Pick driver...</option>
+            {drivers.map((driver) => (
+              <option key={driver.id} value={driver.id}>
+                {driver.name}
+              </option>
+            ))}
+          </select>
+          <button type="submit">Load Driver</button>
+        </Form>
         <Form method="get" className="routeSelector">
+          <input type="hidden" name="driverId" value={selectedDriverId || ""} />
           <select name="route" defaultValue={selectedRoute?.id || ""}>
             {routes.map((route) => (
               <option key={route.id} value={route.id}>
@@ -647,6 +684,19 @@ export default function DriverRoute() {
 
       {currentStop ? (
         <section className="panel driverStop">
+          {currentStop.deliveryStatus !== "en_route" && checklistValue(currentStop, "loaderLoadingAt") ? (
+            <div className="loaderDriverNotice">
+              <p className="eyebrow">Loader Status</p>
+              <h3>Loading your truck now</h3>
+              <p>
+                {currentStop.quantity} {currentStop.unit} {currentStop.material}
+              </p>
+              {checklistValue(currentStop, "loaderNote") ? (
+                <small>{checklistValue(currentStop, "loaderNote")}</small>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="panelHeader">
             <div>
               <p className="eyebrow">Current Stop</p>
@@ -663,6 +713,12 @@ export default function DriverRoute() {
               <span>Material</span>
               <strong>{currentStop.loadLabel || `${currentStop.quantity} ${currentStop.unit} ${currentStop.material}`}</strong>
             </div>
+            {currentLoadedQuantity ? (
+              <div className="driverLoadedQuantityTile">
+                <span>Loaded On Truck</span>
+                <strong>{currentLoadedQuantity} {currentStop.unit}</strong>
+              </div>
+            ) : null}
             <div>
               <span>Phone / Email</span>
               <strong>{currentStop.contact || "Not provided"}</strong>
@@ -700,29 +756,36 @@ export default function DriverRoute() {
             </section>
           ) : null}
 
-          {currentStop.deliveryStatus !== "en_route" ? (
-            <Form method="post" className="fieldCard">
-              <input type="hidden" name="intent" value="enroute" />
-              <input type="hidden" name="orderId" value={currentStop.id} />
-              <label>
-                Quantity loaded
-                <input
-                  name="loadedQuantity"
-                  value={loadedQuantity}
-                  onChange={(event) => setLoadedQuantity(event.currentTarget.value)}
-                  placeholder={`Example: ${currentStop.quantity}`}
-                  autoComplete="off"
-                  required
-                />
-              </label>
-              <button type="submit" className="primaryButton" disabled={isSaving || !loadedQuantity.trim()}>
-                {isSaving ? "Saving..." : "Mark Enroute"}
+          {currentLoadedQuantity ? (
+            <section className="driverLoadedSummary">
+              <div>
+                <p className="eyebrow">Loader Confirmed</p>
+                <h3>{currentLoadedQuantity} {currentStop.unit} loaded</h3>
+                <p>Use this ticket link to tie the loader ticket back to the PO.</p>
+              </div>
+              <button
+                type="button"
+                className="ticketCreatorButton"
+                onClick={() => setTicketPreview({ url: currentTicketUrl, po: loaderTicketPo(currentStop) })}
+              >
+                View Loader Ticket · PO #{loaderTicketPo(currentStop)}
               </button>
-            </Form>
+            </section>
+          ) : null}
+
+          {currentStop.deliveryStatus !== "en_route" ? (
+            <section className="fieldCard driverLockedCard">
+              <p className="eyebrow">Waiting On Loader</p>
+              <h3>Loader must finish this load first.</h3>
+              <p>
+                This stop will automatically switch to Enroute after the loader clicks Done Loading on the loader tablet.
+              </p>
+            </section>
           ) : (
             <Form method="post" className="fieldCard">
               <input type="hidden" name="intent" value="delivered" />
               <input type="hidden" name="orderId" value={currentStop.id} />
+              <input type="hidden" name="driverId" value={selectedDriverId || selectedRoute?.driverId || ""} />
               <input type="hidden" name="proofName" value={selectedRoute.driver || "Driver"} />
               <input type="hidden" name="gpsLocation" value={deliveryGps?.value || ""} />
               <input type="hidden" name="photoUrls" value={photoProof} />

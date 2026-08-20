@@ -3791,3 +3791,23 @@ h2 {
     width: 100%;
   }
 }
+html.ghosEmbeddedFrame,
+html.ghosEmbeddedFrame body {
+  min-height: var(--ghos-host-viewport-height, 100dvh);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+html.ghosEmbeddedFrame .loginPage {
+  min-height: var(--ghos-host-viewport-height, 100dvh);
+}
+
+.ghosSsoErrorOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  padding: 24px;
+  background: #070b18;
+  display: grid;
+  place-items: center;
+}

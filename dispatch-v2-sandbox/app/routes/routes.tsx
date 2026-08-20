@@ -6,8 +6,10 @@ import {
   useActionData,
   useLoaderData,
   useNavigation,
+  useSubmit,
 } from "react-router";
 import {
+  cleanupOldDispatchRoutes,
   deactivateDispatchRoute,
   loadDispatchEmployeeOptions,
   loadRouteTimingSummaries,
@@ -85,11 +87,31 @@ export async function loader({ request }: { request: Request }) {
 }
 
 export async function action({ request }: { request: Request }) {
-  await requireDispatchUser(request, "routes");
+  const currentUser = await requireDispatchUser(request, "routes");
   await requireDispatchEditor(request);
   const form = await request.formData();
   const intent = String(form.get("intent") || "");
   const routeId = String(form.get("routeId") || "").trim();
+
+  if (intent === "cleanup-old-routes") {
+    try {
+      const result = await cleanupOldDispatchRoutes({
+        beforeDateKey: String(form.get("beforeDate") || todayDateKey()),
+        password: String(form.get("managerPassword") || ""),
+        actor: currentUser.email,
+        deleteInactive: String(form.get("deleteInactive") || "0") === "1",
+      });
+      return data({
+        ok: true,
+        message: `Old route cleanup complete: ${result.clearedActiveRoutes} active route${result.clearedActiveRoutes === 1 ? "" : "s"} cleared, ${result.returnedOrders} unfinished order${result.returnedOrders === 1 ? "" : "s"} returned, ${result.deletedInactiveRoutes} inactive route${result.deletedInactiveRoutes === 1 ? "" : "s"} deleted.`,
+      });
+    } catch (error) {
+      return data(
+        { ok: false, message: error instanceof Error ? error.message : "Unable to clean up old routes." },
+        { status: 400 },
+      );
+    }
+  }
 
   if (!routeId) {
     return data({ ok: false, message: "Missing route." }, { status: 400 });
@@ -202,6 +224,7 @@ export default function RoutesPage() {
   const { routes, employees, routeTiming, selectedRoute, dateKey, includeUndated, loadedAt, loadMs } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>() as { ok?: boolean; message?: string } | undefined;
   const navigation = useNavigation();
+  const submit = useSubmit();
   const [search, setSearch] = useState("");
   const [minRt, setMinRt] = useState("");
   const [maxRt, setMaxRt] = useState("");
@@ -223,6 +246,42 @@ export default function RoutesPage() {
     },
     [routes, routeTiming, normalizedSearch, minRt, minRtMinutes, maxRt, maxRtMinutes],
   );
+
+  function submitOldRouteCleanup(deleteInactive: boolean) {
+    const cutoffDate = dateKey || todayDateKey();
+    const description = deleteInactive
+      ? `permanently delete inactive route cards before ${cutoffDate}`
+      : `clear active route cards before ${cutoffDate}`;
+    const confirmed = window.confirm(
+      `This will ${description}.\n\nUnfinished orders on active old routes will be returned to the queue. Delivered orders will not be changed.`,
+    );
+    if (!confirmed) return;
+
+    if (deleteInactive) {
+      const typed = window.prompt(
+        `Type DELETE to permanently remove inactive route cards before ${cutoffDate}.`,
+        "",
+      );
+      if (typed !== "DELETE") return;
+    }
+
+    const managerPassword = window.prompt("Manager override password required:");
+    if (managerPassword === null) return;
+    if (!managerPassword.trim()) {
+      window.alert("Manager override password is required.");
+      return;
+    }
+
+    submit(
+      {
+        intent: "cleanup-old-routes",
+        beforeDate: cutoffDate,
+        managerPassword,
+        deleteInactive: deleteInactive ? "1" : "0",
+      },
+      { method: "post" },
+    );
+  }
 
   return (
     <main className="page">
@@ -286,6 +345,23 @@ export default function RoutesPage() {
           <input name="date" type="date" defaultValue={dateKey || todayDateKey()} />
           <button type="submit">Refresh</button>
         </Form>
+        <div className="routeCleanupActions">
+          <button
+            type="button"
+            onClick={() => submitOldRouteCleanup(false)}
+            disabled={navigation.state !== "idle"}
+          >
+            Clear Old Active
+          </button>
+          <button
+            className="dangerButton"
+            type="button"
+            onClick={() => submitOldRouteCleanup(true)}
+            disabled={navigation.state !== "idle"}
+          >
+            Delete Old Inactive
+          </button>
+        </div>
       </section>
 
       <section className="ordersLayout">

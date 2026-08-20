@@ -9,6 +9,7 @@ const config: CapacitorConfig = {
     cleartext: false,
   },
   ios: {
+    scheme: "GreenHills Dispatch",
     contentInset: "automatic",
     preferredContentMode: "mobile",
     scrollEnabled: true,

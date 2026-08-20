@@ -22,6 +22,19 @@ const SHOPIFY_API_SECRET = (
   ""
 ).trim();
 const SHOPIFY_API_VERSION = (process.env.SHOPIFY_API_VERSION || "2026-01").trim();
+const SHOPIFY_PREFER_SESSION_TOKEN = /^(1|true|yes)$/i.test(
+  (process.env.SHOPIFY_PREFER_SESSION_TOKEN || "").trim(),
+);
+const LOCAL_DELIVERY_SHOPIFY_CLIENT_ID = (
+  process.env.LOCAL_DELIVERY_SHOPIFY_CLIENT_ID ||
+  "5fb95c4ae2305d47aa991a6ea994e100"
+).trim();
+const REMOVED_CONTRACTOR_SHOPIFY_CLIENT_IDS = new Set(
+  (process.env.REMOVED_CONTRACTOR_SHOPIFY_CLIENT_IDS || "b0094fe9ce9d741db6c54bb5ba0d18cc")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
 const GOOGLE_MAPS_API_KEY = (process.env.GOOGLE_MAPS_API_KEY || "").trim();
 const GOOGLE_MAPS_BROWSER_API_KEY = (process.env.GOOGLE_MAPS_BROWSER_API_KEY || "").trim();
 const DISPATCH_PHOTO_BUCKET = (process.env.DISPATCH_PHOTO_BUCKET || "dispatch-photos").trim();
@@ -56,6 +69,7 @@ const DISPATCH_MANAGER_OVERRIDE_PASSWORD = (
 
 let cachedShopifyAccessToken = "";
 let cachedShopifyAccessTokenExpiresAt = 0;
+let cachedShopifyAccessTokenSource = "";
 let cachedDispatchTimingInsights:
   | { limit: number; expiresAt: number; insights: DispatchTimingInsights }
   | null = null;
@@ -147,6 +161,7 @@ const ORDER_LIST_COLUMNS = [
 const ROUTE_COLUMNS = [
   "id",
   "code",
+  "dispatch_date",
   "truck_id",
   "truck",
   "driver_id",
@@ -217,6 +232,7 @@ export type DispatchOrderLineItem = {
 export type DispatchRoute = {
   id: string;
   code: string;
+  dispatchDate: string | null;
   truckId: string | null;
   truck: string;
   truckTonCapacity: number | null;
@@ -538,6 +554,7 @@ const DEFAULT_TRUCK_YARD_CAPACITY = 30;
 export type DispatchBoardOptions = {
   dateKey?: string | null;
   includeUndated?: boolean;
+  driverId?: string | null;
 };
 
 export type DispatchOrderListOptions = {
@@ -550,6 +567,7 @@ export type AssignOrderResult = {
   updatedOrder: DispatchOrder;
   createdOrders: DispatchOrder[];
   createdCount: number;
+  shopifyMessages?: string[];
 };
 
 export type CreateDispatchOrderInput = {
@@ -569,8 +587,10 @@ export type CreateDispatchOrderInput = {
 
 export type CreateDispatchRouteInput = {
   code: string;
+  dispatchDate?: string | null;
   truckId?: string | null;
   truck?: string;
+  driverId?: string | null;
   driver?: string;
   helper?: string;
   shift?: string;
@@ -926,6 +946,7 @@ function normalizeRoute(row: any): DispatchRoute {
   return {
     id: String(row.id),
     code: String(row.code || ""),
+    dispatchDate: row.dispatch_date || null,
     truckId: row.truck_id || null,
     truck: String(row.truck || ""),
     truckTonCapacity: row.truck_tons === null || row.truck_tons === undefined ? null : Number(row.truck_tons),
@@ -1408,6 +1429,22 @@ function redactedEnding(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return "missing";
   return `...${trimmed.slice(-4)}`;
+}
+
+function responsePreview(value: string) {
+  return value.replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
+async function readJsonResponse<T>(response: Response, context: string) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const contentType = response.headers.get("content-type") || "unknown content-type";
+    throw new Error(
+      `${context} returned ${response.status} ${response.statusText} as ${contentType}, not JSON. ${responsePreview(text)}`,
+    );
+  }
 }
 
 function cleanOrderNumber(name: string) {
@@ -2788,6 +2825,152 @@ async function loadActiveRouteOrders(routeId: string, options: DispatchBoardOpti
   return filterOrdersByDispatchDate((data || []).map(normalizeOrder), options).sort(sortStops);
 }
 
+function filterRoutesByDispatchDate(routes: DispatchRoute[], options: DispatchBoardOptions = {}) {
+  if (!options.dateKey) return routes;
+  return routes.filter((route) => {
+    const routeDateKey = route.dispatchDate || dateKeyFromTimestampInChicago(route.createdAt || route.updatedAt);
+    return routeDateKey === options.dateKey;
+  });
+}
+
+function assertDispatchManagerOverridePassword(password: string) {
+  const overridePassword = String(password || "").trim();
+  if (!DISPATCH_MANAGER_OVERRIDE_PASSWORD) {
+    throw new Error("Manager override is not configured. Set DISPATCH_MANAGER_OVERRIDE_PASSWORD, then restart the app.");
+  }
+  if (!overridePassword) {
+    throw new Error("Manager override password is required.");
+  }
+  if (overridePassword !== DISPATCH_MANAGER_OVERRIDE_PASSWORD) {
+    throw new Error("Manager override password is incorrect.");
+  }
+}
+
+async function clearDispatchRoutes(routeIds: string[], actor: string, reason: string) {
+  const uniqueRouteIds = Array.from(new Set(routeIds.filter(Boolean)));
+  if (!uniqueRouteIds.length) return { clearedRoutes: 0, returnedOrders: 0 };
+
+  const now = new Date().toISOString();
+  const { data: returnedData, error: orderError } = await supabase
+    .from("dispatch_orders")
+    .update({
+      assigned_route_id: null,
+      stop_sequence: null,
+      status: "new",
+      delivery_status: "not_started",
+      eta: null,
+      departed_at: null,
+      updated_at: now,
+    })
+    .in("assigned_route_id", uniqueRouteIds)
+    .not("status", "in", "(delivered,cancelled)")
+    .select("id");
+
+  if (orderError) throw new Error(formatSupabaseError(orderError));
+
+  const { error: routeError } = await supabase
+    .from("dispatch_routes")
+    .update({
+      is_active: false,
+      updated_at: now,
+    })
+    .in("id", uniqueRouteIds);
+
+  if (routeError) throw new Error(formatSupabaseError(routeError));
+
+  await writeAuditLog({
+    action: "clear_dispatch_board",
+    actor,
+    message: `${reason} Cleared ${uniqueRouteIds.length} route card${uniqueRouteIds.length === 1 ? "" : "s"} and returned ${
+      returnedData?.length || 0
+    } unfinished order${returnedData?.length === 1 ? "" : "s"} to the queue.`,
+    after: {
+      routeIds: uniqueRouteIds,
+      returnedOrderCount: returnedData?.length || 0,
+    },
+  });
+
+  return { clearedRoutes: uniqueRouteIds.length, returnedOrders: returnedData?.length || 0 };
+}
+
+export async function clearDispatchBoard(input: {
+  dateKey?: string | null;
+  password: string;
+  actor?: string;
+}) {
+  assertDispatchManagerOverridePassword(input.password);
+  const activeRoutes = await loadActiveRoutes();
+  const targetRoutes = input.dateKey
+    ? activeRoutes.filter((route) => {
+        const routeDateKey = route.dispatchDate || dateKeyFromTimestampInChicago(route.createdAt || route.updatedAt);
+        return routeDateKey === input.dateKey;
+      })
+    : activeRoutes;
+
+  return clearDispatchRoutes(
+    targetRoutes.map((route) => route.id),
+    input.actor || "dispatcher",
+    input.dateKey ? `Manual board clear for ${input.dateKey}.` : "Manual board clear for all active days.",
+  );
+}
+
+export async function cleanupOldDispatchRoutes(input: {
+  beforeDateKey: string;
+  password: string;
+  actor?: string;
+  deleteInactive?: boolean;
+}) {
+  assertDispatchManagerOverridePassword(input.password);
+  const beforeDateKey = String(input.beforeDateKey || "").trim();
+  if (!beforeDateKey) throw new Error("Choose a cutoff date before cleaning old routes.");
+
+  const routes = await loadRoutesForMaintenance(1000);
+  const oldRoutes = routes.filter((route) => {
+    const routeDateKey = route.dispatchDate || dateKeyFromTimestampInChicago(route.createdAt || route.updatedAt);
+    return routeDateKey && routeDateKey < beforeDateKey;
+  });
+  const oldActiveRoutes = oldRoutes.filter((route) => route.isActive);
+  const oldInactiveRoutes = oldRoutes.filter((route) => !route.isActive);
+
+  // Inactive routes can still contain unfinished orders if they were
+  // deactivated by an older deployment. Return those orders before deleting
+  // route records so ON DELETE SET NULL cannot leave hidden scheduled orders.
+  const cleared = await clearDispatchRoutes(
+    oldRoutes.map((route) => route.id),
+    input.actor || "dispatcher",
+    `Manual old-route cleanup before ${beforeDateKey}.`,
+  );
+
+  let deletedInactiveRoutes = 0;
+  if (input.deleteInactive && oldInactiveRoutes.length) {
+    const { data, error } = await supabase
+      .from("dispatch_routes")
+      .delete()
+      .in("id", oldInactiveRoutes.map((route) => route.id))
+      .select("id");
+
+    if (error) throw new Error(formatSupabaseError(error));
+    deletedInactiveRoutes = data?.length || 0;
+
+    await writeAuditLog({
+      action: "delete_old_inactive_routes",
+      actor: input.actor || "dispatcher",
+      message: `Deleted ${deletedInactiveRoutes} inactive route card${deletedInactiveRoutes === 1 ? "" : "s"} before ${beforeDateKey}.`,
+      after: {
+        beforeDateKey,
+        routeIds: oldInactiveRoutes.map((route) => route.id),
+      },
+    });
+  }
+
+  return {
+    clearedActiveRoutes: oldActiveRoutes.length,
+    returnedOrders: cleared.returnedOrders,
+    deletedInactiveRoutes,
+    oldInactiveRoutes: oldInactiveRoutes.length,
+  };
+}
+
 export async function loadBoardState(options: DispatchBoardOptions = {}): Promise<DispatchBoardState> {
   const orderQuery = applyDispatchDatePrefilter(
     supabase
@@ -2814,7 +2997,10 @@ export async function loadBoardState(options: DispatchBoardOptions = {}): Promis
   if (orderResult.error) throw new Error(formatSupabaseError(orderResult.error));
   if (routeResult.error) throw new Error(formatSupabaseError(routeResult.error));
 
-  const routes = enrichRoutesWithTruckCapacities((routeResult.data || []).map(normalizeRoute), trucks);
+  const routes = filterRoutesByDispatchDate(
+    enrichRoutesWithTruckCapacities((routeResult.data || []).map(normalizeRoute), trucks),
+    options,
+  );
   const orders = filterOrdersByDispatchDate((orderResult.data || []).map(normalizeOrder), options);
   const deliveredOrders = await loadDeliveredRouteOrders(routes.map((route) => route.id), options);
 
@@ -2823,7 +3009,11 @@ export async function loadBoardState(options: DispatchBoardOptions = {}): Promis
   return {
     orders,
     routes: routeViews,
-    unscheduled: orders.filter((order) => !order.assignedRouteId && order.status !== "scheduled"),
+    // Never hide an orphaned order. A route can be removed independently by
+    // older deployments or a database FK action, leaving status="scheduled"
+    // after assigned_route_id becomes null. Keeping it in the queue makes the
+    // inconsistency recoverable without deleting and reimporting the order.
+    unscheduled: orders.filter((order) => !order.assignedRouteId),
   };
 }
 
@@ -2898,14 +3088,14 @@ export async function loadMonitorState(options: DispatchBoardOptions = {}): Prom
   return {
     orders,
     routes: monitorRoutes,
-    unscheduled: activeOrders.filter((order) => !order.assignedRouteId && order.status !== "scheduled"),
+    unscheduled: activeOrders.filter((order) => !order.assignedRouteId),
     totals: {
       activeRoutes: monitorRoutes.filter((route) => route.activeOrders.length > 0).length,
       activeStops: activeOrders.length,
       deliveredStops: orders.length - activeOrders.length,
       enrouteStops: activeOrders.filter((order) => order.deliveryStatus === "en_route").length,
       waitingStops: activeOrders.filter((order) => order.deliveryStatus !== "en_route").length,
-      unscheduledStops: activeOrders.filter((order) => !order.assignedRouteId && order.status !== "scheduled").length,
+      unscheduledStops: activeOrders.filter((order) => !order.assignedRouteId).length,
       totalTravelMinutes: monitorRoutes.reduce((total, route) => total + route.totalTravelMinutes, 0),
     },
   };
@@ -2982,7 +3172,11 @@ export async function upsertDriverLocation(input: {
   return normalizeDriverLocation(data);
 }
 
-export async function assertDriverCanAccessOrder(orderId: string, scope?: DispatchDriverScope | null) {
+export async function assertDriverCanAccessOrder(
+  orderId: string,
+  scope?: DispatchDriverScope | null,
+  options: { driverId?: string | null } = {},
+) {
   if (!scope || scope.role.role === "admin") return;
 
   const order = await loadOrderForMaintenance(orderId);
@@ -2992,6 +3186,9 @@ export async function assertDriverCanAccessOrder(orderId: string, scope?: Dispat
 
   const route = await getDispatchRouteById(order.assignedRouteId);
   if (!route) throw new Error("Route not found for this stop.");
+
+  const selectedDriverId = String(options.driverId || "").trim();
+  if (selectedDriverId && route.driverId === selectedDriverId) return;
 
   const scopedRoutes = await filterRoutesForDriverScope([route], scope);
   if (!scopedRoutes.length) {
@@ -3005,7 +3202,11 @@ export async function loadDriverState(
   scope?: DispatchDriverScope | null,
 ) {
   const scopedOptions = { dateKey: options.dateKey === undefined ? todayDateKey() : options.dateKey, includeUndated: options.includeUndated !== false };
-  const routes = await filterRoutesForDriverScope(await loadActiveRoutes(), scope);
+  const selectedDriverId = String(options.driverId || "").trim();
+  const activeRoutes = await loadActiveRoutes();
+  const routes = selectedDriverId
+    ? activeRoutes.filter((route) => route.driverId === selectedDriverId)
+    : await filterRoutesForDriverScope(activeRoutes, scope);
   const routeIds = routes.map((route) => route.id);
   let selectedRoute = routeId ? routes.find((route) => route.id === routeId) || null : null;
 
@@ -3051,6 +3252,7 @@ export async function loadDriverState(
     remainingStops: activeStops.length,
     dateKey: scopedOptions.dateKey || null,
     includeUndated: scopedOptions.includeUndated !== false,
+    selectedDriverId: selectedDriverId || selectedRoute?.driverId || null,
   };
 }
 
@@ -3079,8 +3281,7 @@ export async function loadLoaderState(options: DispatchBoardOptions = {}) {
       const nextLoad =
         route.orders.find(
           (order) =>
-            order.deliveryStatus === "not_started" &&
-            !parseChecklist(order.checklistJson).loaderPreparedAt,
+            order.deliveryStatus === "not_started",
         ) || null;
       return { route, nextLoad };
     })
@@ -3160,6 +3361,42 @@ export async function loadDispatchPlanningOrders(limit = 1000) {
 
   if (error) throw new Error(formatSupabaseError(error));
   return (data || []).map(normalizeOrder);
+}
+
+export async function loadDispatchCalendarOrders(startDateKey: string, endDateKey: string, limit = 2000) {
+  const start = dateKeyFromValue(startDateKey);
+  const end = dateKeyFromValue(endDateKey);
+  const rangeStart = start || end;
+  const rangeEnd = end || start;
+
+  let query = supabase
+    .from("dispatch_orders")
+    .select(ORDER_LIST_COLUMNS)
+    .or("status.is.null,status.neq.cancelled")
+    .order("requested_window", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: true })
+    .limit(limit);
+
+  if (rangeStart && rangeEnd) {
+    query = query.or([
+      `and(requested_window.gte.${rangeStart},requested_window.lte.${rangeEnd})`,
+      "requested_window.is.null",
+      "requested_window.eq.",
+    ].join(","));
+  }
+
+  const { data, error } = await query;
+
+  if (error) throw new Error(formatSupabaseError(error));
+
+  const orders = (data || []).map(normalizeOrder);
+  if (!rangeStart || !rangeEnd) return orders;
+
+  return orders.filter((order) => {
+    const key = dateKeyFromValue(order.requestedWindow);
+    if (!key) return true;
+    return key >= rangeStart && key <= rangeEnd;
+  });
 }
 
 export async function loadOrderForMaintenance(orderId: string) {
@@ -4244,11 +4481,23 @@ export async function calculateDispatchQuote(input: DispatchQuoteInput): Promise
 }
 
 export function getShopifyImportConfigStatus() {
+  const usingRemovedContractorApp = Boolean(SHOPIFY_API_KEY && REMOVED_CONTRACTOR_SHOPIFY_CLIENT_IDS.has(SHOPIFY_API_KEY));
+  const hasClientCredentials = Boolean(SHOPIFY_API_KEY && SHOPIFY_API_SECRET);
   return {
-    configured: Boolean(SHOPIFY_SHOP_DOMAIN && (SHOPIFY_ADMIN_ACCESS_TOKEN || (SHOPIFY_API_KEY && SHOPIFY_API_SECRET))),
+    configured: Boolean(SHOPIFY_SHOP_DOMAIN && (SHOPIFY_ADMIN_ACCESS_TOKEN || hasClientCredentials)),
     shopDomain: SHOPIFY_SHOP_DOMAIN ? normalizeShopDomain(SHOPIFY_SHOP_DOMAIN) : "",
     apiVersion: SHOPIFY_API_VERSION,
-    authMode: SHOPIFY_ADMIN_ACCESS_TOKEN ? "access-token" : "client-credentials",
+    authMode: SHOPIFY_ADMIN_ACCESS_TOKEN
+      ? "access-token"
+      : hasClientCredentials
+        ? "client-credentials"
+        : SHOPIFY_PREFER_SESSION_TOKEN
+          ? "installed-session"
+          : "not-configured",
+    expectedApp: "Local-Delivery",
+    expectedClientIdEnding: redactedEnding(LOCAL_DELIVERY_SHOPIFY_CLIENT_ID),
+    configuredClientIdEnding: redactedEnding(SHOPIFY_API_KEY),
+    usingRemovedContractorApp,
   };
 }
 
@@ -4262,13 +4511,46 @@ function shopifyVariantDisplayTitle(productTitle: string, variantTitle?: string 
 
 async function getShopifyAccessToken() {
   if (SHOPIFY_ADMIN_ACCESS_TOKEN) return SHOPIFY_ADMIN_ACCESS_TOKEN;
-  if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
-    throw new Error("Missing SHOPIFY_SHOP_DOMAIN plus either SHOPIFY_ADMIN_ACCESS_TOKEN or SHOPIFY_API_KEY and SHOPIFY_API_SECRET.");
+
+  if (SHOPIFY_PREFER_SESSION_TOKEN) {
+    const sessionToken = await getInstalledShopifySessionAccessToken();
+    if (sessionToken) return sessionToken;
   }
 
+  if (SHOPIFY_API_KEY && SHOPIFY_API_SECRET) {
+    return getShopifyClientCredentialsAccessToken();
+  }
+
+  const sessionToken = await getInstalledShopifySessionAccessToken();
+  if (sessionToken) return sessionToken;
+
+  if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
+    throw new Error("Missing SHOPIFY_SHOP_DOMAIN plus either SHOPIFY_ADMIN_ACCESS_TOKEN, an installed Shopify Session token in Supabase, or SHOPIFY_API_KEY and SHOPIFY_API_SECRET.");
+  }
+}
+
+async function getShopifyClientCredentialsAccessToken() {
   const now = Date.now();
-  if (cachedShopifyAccessToken && cachedShopifyAccessTokenExpiresAt > now + 60_000) {
+  if (
+    cachedShopifyAccessToken &&
+    cachedShopifyAccessTokenSource === "client-credentials" &&
+    cachedShopifyAccessTokenExpiresAt > now + 60_000
+  ) {
     return cachedShopifyAccessToken;
+  }
+
+  if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
+    throw new Error("Missing SHOPIFY_SHOP_DOMAIN plus SHOPIFY_API_KEY and SHOPIFY_API_SECRET.");
+  }
+  if (REMOVED_CONTRACTOR_SHOPIFY_CLIENT_IDS.has(SHOPIFY_API_KEY)) {
+    throw new Error(
+      [
+        "Dispatch Shopify actions are configured with the removed Local-Delivery-Contractor app client ID.",
+        "Switch SHOPIFY_API_KEY and SHOPIFY_API_SECRET to the staying Local-Delivery Shopify app before importing, fulfilling, or marking delivered.",
+        `Expected Local-Delivery client ID ending: ${redactedEnding(LOCAL_DELIVERY_SHOPIFY_CLIENT_ID)}.`,
+        `Configured client ID ending: ${redactedEnding(SHOPIFY_API_KEY)}.`,
+      ].join(" "),
+    );
   }
 
   const body = new URLSearchParams({
@@ -4283,12 +4565,12 @@ async function getShopifyAccessToken() {
     body,
   });
 
-  const payload = await response.json() as {
+  const payload = await readJsonResponse<{
     access_token?: string;
     expires_in?: number;
     error?: string;
     error_description?: string;
-  };
+  }>(response, "Shopify client-credentials token request");
 
   if (!response.ok || !payload.access_token) {
     throw new Error(
@@ -4303,18 +4585,71 @@ async function getShopifyAccessToken() {
 
   cachedShopifyAccessToken = payload.access_token;
   cachedShopifyAccessTokenExpiresAt = now + Number(payload.expires_in || 86400) * 1000;
+  cachedShopifyAccessTokenSource = "client-credentials";
+  return cachedShopifyAccessToken;
+}
+
+async function getInstalledShopifySessionAccessToken() {
+  if (!SHOPIFY_SHOP_DOMAIN) return null;
+
+  const now = Date.now();
+  if (
+    cachedShopifyAccessToken &&
+    cachedShopifyAccessTokenSource === "session" &&
+    cachedShopifyAccessTokenExpiresAt > now + 60_000
+  ) {
+    return cachedShopifyAccessToken;
+  }
+
+  const shop = normalizeShopDomain(SHOPIFY_SHOP_DOMAIN);
+  const { data, error } = await supabase
+    .from("Session")
+    .select("id,shop,isOnline,expires,accessToken")
+    .eq("shop", shop)
+    .limit(10);
+
+  if (error) {
+    console.warn("[SHOPIFY SESSION TOKEN LOOKUP WARNING]", error);
+    return null;
+  }
+
+  const rows = Array.isArray(data) ? data : [];
+  const offlineSession =
+    rows.find((row: any) => row?.id === `offline_${shop}` && row?.accessToken) ||
+    rows.find((row: any) => row?.isOnline === false && row?.accessToken) ||
+    rows.find((row: any) => row?.accessToken);
+
+  const token = String((offlineSession as any)?.accessToken || "").trim();
+  if (!token) return null;
+
+  cachedShopifyAccessToken = token;
+  cachedShopifyAccessTokenExpiresAt = now + 10 * 60 * 1000;
+  cachedShopifyAccessTokenSource = "session";
   return cachedShopifyAccessToken;
 }
 
 type ShopifyUserError = {
-  field?: string[] | null;
-  message?: string | null;
+  field?: unknown;
+  message?: unknown;
 };
 
 type ShopifyGraphqlResponse<T> = {
   data?: T;
-  errors?: Array<{ message?: string | null }>;
+  errors?: unknown;
 };
+
+function normalizeShopifyErrors(errors: unknown): Array<{ field?: unknown; message?: unknown }> {
+  if (Array.isArray(errors)) {
+    return errors.filter(Boolean) as Array<{ field?: unknown; message?: unknown }>;
+  }
+  if (errors && typeof errors === "object") {
+    return [errors as { field?: unknown; message?: unknown }];
+  }
+  if (typeof errors === "string" && errors.trim()) {
+    return [{ message: errors }];
+  }
+  return [];
+}
 
 export async function shopifyGraphql<T>(query: string, variables: Record<string, unknown>) {
   if (!SHOPIFY_SHOP_DOMAIN) throw new Error("Missing SHOPIFY_SHOP_DOMAIN.");
@@ -4330,9 +4665,13 @@ export async function shopifyGraphql<T>(query: string, variables: Record<string,
       body: JSON.stringify({ query, variables }),
     },
   );
-  const body = await response.json() as ShopifyGraphqlResponse<T>;
-  if (!response.ok || body.errors?.length) {
-    const message = body.errors?.map((error) => error.message).filter(Boolean).join("; ");
+  const body = await readJsonResponse<ShopifyGraphqlResponse<T>>(
+    response,
+    `Shopify GraphQL request to ${normalizeShopDomain(SHOPIFY_SHOP_DOMAIN)}`,
+  );
+  const errors = normalizeShopifyErrors(body.errors);
+  if (!response.ok || errors.length) {
+    const message = errors.map((error) => String(error.message || "")).filter(Boolean).join("; ");
     throw new Error(message || `Shopify GraphQL failed with HTTP ${response.status}.`);
   }
   return body.data as T;
@@ -4603,9 +4942,17 @@ export async function repairDispatchOrderMaterialsFromProductSourceMap(limit = 1
   };
 }
 
-function shopifyUserErrorMessage(errors?: ShopifyUserError[]) {
-  return (errors || [])
-    .map((error) => [error.field?.join("."), error.message].filter(Boolean).join(": "))
+function shopifyUserErrorMessage(errors?: unknown) {
+  return normalizeShopifyErrors(errors)
+    .map((error) => {
+      const field = Array.isArray(error.field)
+        ? error.field.map(String).filter(Boolean).join(".")
+        : error.field == null
+          ? ""
+          : String(error.field);
+      const message = String(error.message || "");
+      return [field, message].filter(Boolean).join(": ");
+    })
     .filter(Boolean)
     .join("; ");
 }
@@ -4901,7 +5248,17 @@ async function markShopifyDispatchOrderDelivered(order: DispatchOrder, happenedA
   };
 }
 
-async function syncShopifyFulfilledForAssignedOrder(order: DispatchOrder, routeId: string, reason: string) {
+type AssignedShopifyFulfillmentSyncResult = {
+  order: DispatchOrder;
+  message: string;
+  ok: boolean;
+};
+
+async function syncShopifyFulfilledForAssignedOrder(
+  order: DispatchOrder,
+  routeId: string,
+  reason: string,
+): Promise<AssignedShopifyFulfillmentSyncResult> {
   try {
     const result = await fulfillShopifyDispatchOrder(order, reason);
     await writeAuditLog({
@@ -4913,17 +5270,18 @@ async function syncShopifyFulfilledForAssignedOrder(order: DispatchOrder, routeI
       before: order,
       after: result.order,
     });
-    return result.order;
+    return { order: result.order, message: result.message, ok: result.ok };
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Shopify fulfilled sync failed.";
     await writeAuditLog({
       action: "shopify_mark_fulfilled_failed",
       actor: "shopify-sync",
       orderId: order.id,
       routeId,
-      message: error instanceof Error ? error.message : "Shopify fulfilled sync failed.",
+      message,
       before: order,
     });
-    return order;
+    return { order, message: `Shopify fulfillment failed: ${message}`, ok: false };
   }
 }
 
@@ -5039,8 +5397,9 @@ async function fetchShopifyOrderBatch(limit: number, query: string, sortKey: "CR
     errors?: Array<{ message?: string }>;
   };
 
-  if (!response.ok || body.errors?.length) {
-    const message = body.errors?.map((error) => error.message).filter(Boolean).join("; ");
+  const errors = normalizeShopifyErrors(body.errors);
+  if (!response.ok || errors.length) {
+    const message = errors.map((error) => String(error.message || "")).filter(Boolean).join("; ");
     throw new Error(message || `Shopify import failed with HTTP ${response.status}.`);
   }
 
@@ -5783,15 +6142,33 @@ export async function createDispatchOrder(input: CreateDispatchOrderInput) {
 export async function createDispatchRoute(input: CreateDispatchRouteInput) {
   const now = new Date().toISOString();
   const routeId = makeDispatchId("R");
+  const dispatchDate = dateKeyFromValue(input.dispatchDate) || todayDateKey();
   const truck = await resolveDispatchTruckForRoute(input.truckId, input.truck);
+  const truckLabel = truck?.truckNumber || truck?.name || input.truck?.trim() || "";
+  const driverId = String(input.driverId || "").trim() || null;
+  let driverName = input.driver?.trim() || "";
+  if (driverId) {
+    const { data: employeeData, error: employeeError } = await supabase
+      .from("dispatch_employees")
+      .select("*")
+      .eq("id", driverId)
+      .maybeSingle();
+
+    if (employeeError) throw new Error(formatSupabaseError(employeeError));
+    const employee = employeeData ? normalizeEmployeeOption(employeeData) : null;
+    if (!employee?.id || !employee.isActive) throw new Error("Choose an active driver.");
+    driverName = employee.name;
+  }
   const { data, error } = await supabase
     .from("dispatch_routes")
     .insert({
       id: routeId,
       code: input.code.trim(),
+      dispatch_date: dispatchDate,
       truck_id: truck?.id || input.truckId || null,
-      truck: input.truck?.trim() || "",
-      driver: input.driver?.trim() || "",
+      truck: truckLabel,
+      driver_id: driverId,
+      driver: driverName,
       helper: input.helper?.trim() || "",
       color: input.color?.trim() || "#38bdf8",
       shift: input.shift?.trim() || "",
@@ -6207,6 +6584,62 @@ export async function updateDispatchRoute(routeId: string, input: UpdateDispatch
   return updatedRoute;
 }
 
+export async function updateDispatchRouteDriver(
+  routeId: string,
+  driverId: string | null,
+  actor = "dispatcher",
+) {
+  const { data: beforeData, error: beforeError } = await supabase
+    .from("dispatch_routes")
+    .select(ROUTE_COLUMNS)
+    .eq("id", routeId)
+    .single();
+
+  if (beforeError) throw new Error(formatSupabaseError(beforeError));
+  const before = normalizeRoute(beforeData);
+  const nextDriverId = String(driverId || "").trim() || null;
+  let nextDriverName = "";
+
+  if (nextDriverId) {
+    const { data: employeeData, error: employeeError } = await supabase
+      .from("dispatch_employees")
+      .select("*")
+      .eq("id", nextDriverId)
+      .maybeSingle();
+
+    if (employeeError) throw new Error(formatSupabaseError(employeeError));
+    const employee = employeeData ? normalizeEmployeeOption(employeeData) : null;
+    if (!employee?.id || !employee.isActive) {
+      throw new Error("Choose an active driver.");
+    }
+    nextDriverName = employee.name;
+  }
+
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("dispatch_routes")
+    .update({
+      driver_id: nextDriverId,
+      driver: nextDriverName,
+      updated_at: now,
+    })
+    .eq("id", routeId)
+    .select(ROUTE_COLUMNS)
+    .single();
+
+  if (error) throw new Error(formatSupabaseError(error));
+  const updatedRoute = normalizeRoute(data);
+  await writeAuditLog({
+    action: "update_route_driver",
+    actor,
+    routeId,
+    message: `Route ${updatedRoute.code} driver changed to ${nextDriverName || "No driver"}.`,
+    before,
+    after: updatedRoute,
+  });
+  return updatedRoute;
+}
+
 export async function deactivateDispatchRoute(routeId: string) {
   const { data: beforeData, error: beforeError } = await supabase
     .from("dispatch_routes")
@@ -6216,6 +6649,12 @@ export async function deactivateDispatchRoute(routeId: string) {
 
   if (beforeError) throw new Error(formatSupabaseError(beforeError));
   const before = normalizeRoute(beforeData);
+  const unfinishedOrders = await loadActiveRouteOrders(routeId);
+  if (unfinishedOrders.length) {
+    throw new Error(
+      `Route ${before.code} still has ${unfinishedOrders.length} unfinished order${unfinishedOrders.length === 1 ? "" : "s"}. Move the orders back to the queue before deactivating the route.`,
+    );
+  }
   const now = new Date().toISOString();
   const { data, error } = await supabase
     .from("dispatch_routes")
@@ -6510,6 +6949,7 @@ export async function assignOrder(
     capacity > 0 &&
     quantity > capacity &&
     requestedSplitCount > 1;
+  const shopifyMessages: string[] = [];
 
   if (shouldSplit) {
     const perLoadQuantity = formatSplitQuantity(quantity / requestedSplitCount);
@@ -6544,7 +6984,9 @@ export async function assignOrder(
     if (error) throw new Error(formatSupabaseError(error));
     let updatedOrder = normalizeOrder(data);
     updatedOrder = await refreshStoredTimingForAssignedDriver(updatedOrder, assignedRoute);
-    updatedOrder = await syncShopifyFulfilledForAssignedOrder(updatedOrder, routeId, "split-route-assignment");
+    const updatedOrderShopifySync = await syncShopifyFulfilledForAssignedOrder(updatedOrder, routeId, "split-route-assignment");
+    updatedOrder = updatedOrderShopifySync.order;
+    if (updatedOrderShopifySync.message) shopifyMessages.push(updatedOrderShopifySync.message);
 
     const createdOrders: DispatchOrder[] = [];
     for (let index = 1; index < requestedSplitCount; index += 1) {
@@ -6579,7 +7021,9 @@ export async function assignOrder(
 
       if (createdError) throw new Error(formatSupabaseError(createdError));
       let createdOrder = await refreshStoredTimingForAssignedDriver(normalizeOrder(createdData), assignedRoute);
-      createdOrder = await syncShopifyFulfilledForAssignedOrder(createdOrder, routeId, "split-route-assignment");
+      const createdOrderShopifySync = await syncShopifyFulfilledForAssignedOrder(createdOrder, routeId, "split-route-assignment");
+      createdOrder = createdOrderShopifySync.order;
+      if (createdOrderShopifySync.message) shopifyMessages.push(createdOrderShopifySync.message);
       createdOrders.push(createdOrder);
     }
 
@@ -6601,6 +7045,7 @@ export async function assignOrder(
       updatedOrder,
       createdOrders,
       createdCount: requestedSplitCount,
+      shopifyMessages,
     };
   }
 
@@ -6620,7 +7065,9 @@ export async function assignOrder(
   if (error) throw new Error(formatSupabaseError(error));
   let updatedOrder = normalizeOrder(data);
   updatedOrder = await refreshStoredTimingForAssignedDriver(updatedOrder, assignedRoute);
-  updatedOrder = await syncShopifyFulfilledForAssignedOrder(updatedOrder, routeId, "route-assignment");
+  const updatedOrderShopifySync = await syncShopifyFulfilledForAssignedOrder(updatedOrder, routeId, "route-assignment");
+  updatedOrder = updatedOrderShopifySync.order;
+  if (updatedOrderShopifySync.message) shopifyMessages.push(updatedOrderShopifySync.message);
   const previousRouteId = beforeOrder.assignedRouteId;
   const siblingOrders = groupShopifyAddOns ? await loadActiveShopifySiblingOrders(beforeOrder) : [];
   const updatedSiblings: DispatchOrder[] = [];
@@ -6644,7 +7091,9 @@ export async function assignOrder(
     if (siblingError) throw new Error(formatSupabaseError(siblingError));
     let updatedSibling = normalizeOrder(siblingData);
     updatedSibling = await refreshStoredTimingForAssignedDriver(updatedSibling, assignedRoute);
-    updatedSibling = await syncShopifyFulfilledForAssignedOrder(updatedSibling, routeId, "route-assignment-grouped");
+    const siblingShopifySync = await syncShopifyFulfilledForAssignedOrder(updatedSibling, routeId, "route-assignment-grouped");
+    updatedSibling = siblingShopifySync.order;
+    if (siblingShopifySync.message) shopifyMessages.push(siblingShopifySync.message);
     updatedSiblings.push(updatedSibling);
   }
 
@@ -6668,6 +7117,7 @@ export async function assignOrder(
     updatedOrder,
     createdOrders: updatedSiblings,
     createdCount: 1 + updatedSiblings.length,
+    shopifyMessages,
   };
 }
 
@@ -6771,7 +7221,11 @@ export async function reorderStop(orderId: string, direction: "up" | "down") {
   };
 }
 
-export async function markStopEnroute(orderId: string, loadedQuantity: string) {
+export async function markStopEnroute(
+  orderId: string,
+  loadedQuantity: string,
+  options: { actor?: string; loaderNote?: string; markLoaderPrepared?: boolean } = {},
+) {
   const { data: existingData, error: existingError } = await supabase
     .from("dispatch_orders")
     .select(ORDER_COLUMNS)
@@ -6785,6 +7239,14 @@ export async function markStopEnroute(orderId: string, loadedQuantity: string) {
     ...parseChecklist(existing.checklistJson),
     loadedQuantity,
     loadedAt: now,
+    ...(options.markLoaderPrepared
+      ? {
+          loaderPreparedAt: now,
+          loaderSubmittedAt: now,
+          loaderLoadedQuantity: loadedQuantity,
+          loaderNote: options.loaderNote || "",
+        }
+      : {}),
   };
 
   const { data, error } = await supabase
@@ -6811,10 +7273,12 @@ export async function markStopEnroute(orderId: string, loadedQuantity: string) {
   });
   await writeAuditLog({
     action: "mark_enroute",
-    actor: "driver",
+    actor: options.actor || "driver",
     orderId,
     routeId: updatedOrder.assignedRouteId,
-    message: `${updatedOrder.orderNumber} marked enroute with ${loadedQuantity} loaded.${
+    message: `${updatedOrder.orderNumber} marked enroute with ${loadedQuantity} loaded${
+      options.actor === "loader" ? " by loader submit" : ""
+    }.${
       metric ? " Timing baseline captured." : ""
     }`,
     before: existing,
@@ -7122,6 +7586,46 @@ export async function markLoadPrepared(orderId: string, loaderNote: string) {
     orderId,
     routeId: updatedOrder.assignedRouteId,
     message: `${updatedOrder.orderNumber} load prepared.${loaderNote ? ` Note: ${loaderNote}` : ""}`,
+    before: existing,
+    after: updatedOrder,
+  });
+  return updatedOrder;
+}
+
+export async function markLoadStarted(orderId: string, loaderNote: string) {
+  const { data: existingData, error: existingError } = await supabase
+    .from("dispatch_orders")
+    .select(ORDER_COLUMNS)
+    .eq("id", orderId)
+    .single();
+
+  if (existingError) throw new Error(formatSupabaseError(existingError));
+  const existing = normalizeOrder(existingData);
+  const now = new Date().toISOString();
+  const checklist = {
+    ...parseChecklist(existing.checklistJson),
+    loaderLoadingAt: now,
+    loaderNote,
+  };
+
+  const { data, error } = await supabase
+    .from("dispatch_orders")
+    .update({
+      checklist_json: JSON.stringify(checklist),
+      updated_at: now,
+    })
+    .eq("id", orderId)
+    .select(ORDER_COLUMNS)
+    .single();
+
+  if (error) throw new Error(formatSupabaseError(error));
+  const updatedOrder = normalizeOrder(data);
+  await writeAuditLog({
+    action: "mark_load_loading",
+    actor: "loader",
+    orderId,
+    routeId: updatedOrder.assignedRouteId,
+    message: `${updatedOrder.orderNumber} is being loaded.${loaderNote ? ` Note: ${loaderNote}` : ""}`,
     before: existing,
     after: updatedOrder,
   });

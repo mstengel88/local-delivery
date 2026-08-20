@@ -78,17 +78,127 @@ function splitCustomerName(name: string | null | undefined) {
   };
 }
 
-function shopifyUserErrorMessage(errors: Array<{ field?: string[]; message?: string }> = []) {
-  return errors
-    .map((error) => error.field?.length ? `${error.field.join(".")}: ${error.message}` : error.message)
+type ShopifyUserErrorLike = {
+  field?: unknown;
+  message?: unknown;
+};
+
+function normalizeShopifyUserErrors(errors: unknown): ShopifyUserErrorLike[] {
+  if (Array.isArray(errors)) {
+    return errors.filter(Boolean) as ShopifyUserErrorLike[];
+  }
+  if (errors && typeof errors === "object") {
+    return [errors as ShopifyUserErrorLike];
+  }
+  if (typeof errors === "string" && errors.trim()) {
+    return [{ message: errors }];
+  }
+  return [];
+}
+
+function formatShopifyErrorField(field: unknown) {
+  if (Array.isArray(field)) {
+    return field.map(String).filter(Boolean).join(".");
+  }
+  if (field == null) return "";
+  return String(field);
+}
+
+function shopifyUserErrorMessage(errors: unknown = []) {
+  return normalizeShopifyUserErrors(errors)
+    .map((error) => {
+      const field = formatShopifyErrorField(error.field);
+      const message = String(error.message || "Unknown Shopify error");
+      return field ? `${field}: ${message}` : message;
+    })
     .filter(Boolean)
-    .join(", ");
+    .join(", ") || "Unknown Shopify error.";
 }
 
 function isB2BDraftInputError(errorMessage: string) {
   return /paymentTerms|payment terms|purchasingEntity|purchasing entity|purchasingCompany|companyLocation|companyContact|companyId/i.test(
     errorMessage,
   );
+}
+
+type ShopifyShippingRate = {
+  handle?: string | null;
+  title?: string | null;
+  price?: {
+    amount?: string | null;
+    currencyCode?: string | null;
+  } | null;
+};
+
+function shippingRateCents(rate: ShopifyShippingRate) {
+  const amount = Number(rate.price?.amount || NaN);
+  return Number.isFinite(amount) ? Math.round(amount * 100) : null;
+}
+
+function isPickupShippingRate(rate: ShopifyShippingRate) {
+  return /\b(pick\s*up|pickup|in[-\s]?store|store pickup|local pickup)\b/i.test(String(rate.title || ""));
+}
+
+function chooseShopifyShippingRate(rates: ShopifyShippingRate[], _deliveryChargeCents: number) {
+  const validRates = rates.filter((rate) => rate.handle && !isPickupShippingRate(rate));
+  if (!validRates.length) return null;
+
+  const deliveryRates = validRates.filter((rate) => /\b(delivery|shipping|ship)\b/i.test(String(rate.title || "")));
+  const candidates = deliveryRates.length ? deliveryRates : validRates;
+  return candidates
+    .slice()
+    .sort((left, right) => {
+      const leftIsGhsDelivery = /^GHS Delivery$/i.test(String(left.title || "").trim());
+      const rightIsGhsDelivery = /^GHS Delivery$/i.test(String(right.title || "").trim());
+      if (leftIsGhsDelivery !== rightIsGhsDelivery) {
+        return leftIsGhsDelivery ? -1 : 1;
+      }
+
+      const leftCents = shippingRateCents(left);
+      const rightCents = shippingRateCents(right);
+      if (leftCents !== null && rightCents !== null) {
+        return leftCents - rightCents;
+      }
+      if (leftCents !== null) return -1;
+      if (rightCents !== null) return 1;
+      return String(left.title || "").localeCompare(String(right.title || ""));
+    })[0] || null;
+}
+
+async function calculateShopifyShippingRate(input: Record<string, unknown>, deliveryChargeCents: number) {
+  const json = await shopifyGraphql<{
+    draftOrderCalculate?: {
+      calculatedDraftOrder?: {
+        availableShippingRates?: ShopifyShippingRate[] | null;
+      } | null;
+      userErrors?: unknown;
+    } | null;
+  }>(
+    `mutation draftOrderCalculateForShipping($input: DraftOrderInput!) {
+      draftOrderCalculate(input: $input) {
+        calculatedDraftOrder {
+          availableShippingRates {
+            handle
+            title
+            price {
+              amount
+              currencyCode
+            }
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }`,
+    { input },
+  );
+
+  const payload = json.draftOrderCalculate;
+  const userErrors = normalizeShopifyUserErrors(payload?.userErrors);
+  if (userErrors.length) throw new Error(shopifyUserErrorMessage(userErrors));
+  return chooseShopifyShippingRate(payload?.calculatedDraftOrder?.availableShippingRates || [], deliveryChargeCents);
 }
 
 async function findOrCreateCustomerId(input: {
@@ -132,7 +242,7 @@ async function findOrCreateCustomerId(input: {
       },
     },
   );
-  const userErrors = createJson.customerCreate?.userErrors || [];
+  const userErrors = normalizeShopifyUserErrors(createJson.customerCreate?.userErrors);
   if (userErrors.length) throw new Error(shopifyUserErrorMessage(userErrors));
   return createJson.customerCreate?.customer?.id || null;
 }
@@ -172,7 +282,7 @@ async function loadB2BCompanyForQuote(quote: {
   return rows?.[0] || null;
 }
 
-export async function action({ request }: { request: Request }) {
+async function handleCreateDraftOrderAction({ request }: { request: Request }) {
   if (!(await hasUserPermission(request, "sendToShopify"))) {
     return data({ ok: false, message: "You do not have permission to send quotes to Shopify." }, { status: 403 });
   }
@@ -201,7 +311,7 @@ export async function action({ request }: { request: Request }) {
     quote.created_by_email ||
     null;
   const products = await getProductOptionsFromSupabase();
-  const lineItems = quote.line_items || [];
+  const lineItems = Array.isArray(quote.line_items) ? quote.line_items : [];
   const customerName = splitCustomerName(quote.customer_name);
   const billingAddress = {
     address1: quote.billing_address1 || quote.address1,
@@ -295,10 +405,13 @@ export async function action({ request }: { request: Request }) {
     );
   }
 
-  const draftInput = {
+  const draftInput: Record<string, unknown> = {
     note: [
       `Quote ID: ${quote.id}`,
       sentByName ? `Sent by: ${sentByName}` : null,
+      deliveryChargeCents > 0
+        ? `Quoted delivery estimate: $${(deliveryChargeCents / 100).toFixed(2)}. Shopify shipping should calculate the final delivery charge at checkout.`
+        : null,
       quote.summary ? `Summary: ${quote.summary}` : null,
       quote.description ? `Notes: ${quote.description}` : null,
     ]
@@ -308,6 +421,21 @@ export async function action({ request }: { request: Request }) {
     ...(!canUsePurchasingCompany && customerId && !quoteTaxExempt ? { customerId } : {}),
     ...(quoteTaxExempt ? { taxExempt: true } : {}),
     tags: ["custom-quote", buildQuoteTag(quote.id)],
+    customAttributes: [
+      { key: "Quote ID", value: quote.id },
+      ...(deliveryChargeCents > 0
+        ? [
+            {
+              key: "Quoted Delivery Estimate",
+              value: `$${(deliveryChargeCents / 100).toFixed(2)}`,
+            },
+            {
+              key: "Shipping",
+              value: "Calculate with Shopify shipping rates",
+            },
+          ]
+        : []),
+    ],
     acceptAutomaticDiscounts: false,
     allowDiscountCodesInCheckout: false,
     shippingAddress: {
@@ -344,9 +472,9 @@ export async function action({ request }: { request: Request }) {
           },
         }
       : {}),
-    ...(paymentTermsTemplateId
-      ? {
-          paymentTerms: {
+	    ...(paymentTermsTemplateId
+	      ? {
+	          paymentTerms: {
             paymentTermsTemplateId,
             paymentSchedules: [
               {
@@ -355,16 +483,55 @@ export async function action({ request }: { request: Request }) {
             ],
           },
         }
-      : {}),
-    ...(deliveryChargeCents > 0
-      ? {
-          shippingLine: {
-            title: truncateShopifyTitle(quote.service_name || "Quoted Delivery"),
-            priceWithCurrency: usdMoney(deliveryChargeCents / 100),
-          },
-        }
-      : {}),
-  };
+	      : {}),
+	  };
+
+  let selectedShippingRate: ShopifyShippingRate | null = null;
+  if (deliveryChargeCents > 0) {
+    try {
+      selectedShippingRate = await calculateShopifyShippingRate(draftInput, deliveryChargeCents);
+    } catch (error) {
+      return data(
+        {
+          ok: false,
+          message: `Shopify could not calculate shipping for this quote: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+        { status: 400 },
+      );
+    }
+
+    if (!selectedShippingRate?.handle) {
+      return data(
+        {
+          ok: false,
+          message:
+            "Shopify did not return a delivery shipping rate for this quote. Check that the customer address is valid and the Local-Delivery carrier service is available for this cart.",
+        },
+        { status: 400 },
+      );
+    }
+
+    draftInput.shippingLine = {
+      shippingRateHandle: selectedShippingRate.handle,
+      title: selectedShippingRate.title || "Delivery",
+    };
+    const customAttributes = Array.isArray(draftInput.customAttributes)
+      ? draftInput.customAttributes as Array<{ key: string; value: string }>
+      : [];
+    const selectedShippingCents = shippingRateCents(selectedShippingRate);
+    customAttributes.push({
+      key: "Shopify Shipping Rate",
+      value: [
+        selectedShippingRate.title || "Delivery",
+        selectedShippingCents !== null ? `$${(selectedShippingCents / 100).toFixed(2)}` : null,
+      ]
+        .filter(Boolean)
+        .join(" - "),
+    });
+    draftInput.customAttributes = customAttributes;
+  }
 
   type DraftOrderCreatePayload = {
     draftOrderCreate?: {
@@ -417,7 +584,7 @@ export async function action({ request }: { request: Request }) {
   }
 
   const payload = json.draftOrderCreate;
-  const userErrors = payload?.userErrors || [];
+  const userErrors = normalizeShopifyUserErrors(payload?.userErrors);
   if (userErrors.length) {
     const userErrorMessage = shopifyUserErrorMessage(userErrors);
     if ((paymentTermsTemplateId || canUsePurchasingCompany) && isB2BDraftInputError(userErrorMessage)) {
@@ -427,7 +594,7 @@ export async function action({ request }: { request: Request }) {
         ...(customerId && !quoteTaxExempt ? { customerId } : {}),
       });
       const fallbackPayload = fallbackJson.draftOrderCreate;
-      const fallbackUserErrors = fallbackPayload?.userErrors || [];
+      const fallbackUserErrors = normalizeShopifyUserErrors(fallbackPayload?.userErrors);
       if (fallbackUserErrors.length) {
         return data({ ok: false, message: shopifyUserErrorMessage(fallbackUserErrors) }, { status: 400 });
       }
@@ -439,7 +606,7 @@ export async function action({ request }: { request: Request }) {
 
       return data({
         ok: true,
-        message: `Draft order ${fallbackDraftOrder.name} created in Shopify. Payment terms could not be applied automatically: ${userErrorMessage}`,
+        message: `Draft order ${fallbackDraftOrder.name} created in Shopify${selectedShippingRate?.title ? ` with ${selectedShippingRate.title}` : ""}. Payment terms could not be applied automatically: ${userErrorMessage}`,
         draftOrderId: fallbackDraftOrder.id,
         draftOrderName: fallbackDraftOrder.name,
         draftOrderInvoiceUrl: fallbackDraftOrder.invoiceUrl || null,
@@ -459,7 +626,7 @@ export async function action({ request }: { request: Request }) {
 
   return data({
     ok: true,
-    message: `Draft order ${draftOrder.name} created in Shopify.${b2bWarning || ""}`,
+    message: `Draft order ${draftOrder.name} created in Shopify${selectedShippingRate?.title ? ` with ${selectedShippingRate.title}` : ""}.${b2bWarning || ""}`,
     draftOrderId: draftOrder.id,
     draftOrderName: draftOrder.name,
     draftOrderInvoiceUrl: draftOrder.invoiceUrl || null,
@@ -467,4 +634,22 @@ export async function action({ request }: { request: Request }) {
       ? `https://admin.shopify.com/store/${getStoreHandle(shop)}/draft_orders/${draftOrder.legacyResourceId}`
       : null,
   });
+}
+
+export async function action({ request }: { request: Request }) {
+  try {
+    return await handleCreateDraftOrderAction({ request });
+  } catch (error) {
+    console.error("[CREATE DRAFT ORDER ERROR]", error);
+    return data(
+      {
+        ok: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unexpected server error while sending this quote to Shopify.",
+      },
+      { status: 500 },
+    );
+  }
 }

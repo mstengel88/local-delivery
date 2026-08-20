@@ -147,6 +147,7 @@ type StoredSession = {
   accessToken: string;
   refreshToken: string;
   expiresAt: number | null;
+  embedded?: boolean;
 };
 
 function encodeSession(session: StoredSession) {
@@ -231,6 +232,10 @@ function cookieHeader(value: string, maxAge = SESSION_MAX_AGE) {
   return `${SESSION_COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
 }
 
+function embeddedCookieHeader(value: string, maxAge = SESSION_MAX_AGE) {
+  return `${SESSION_COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=None; Partitioned; Max-Age=${maxAge}`;
+}
+
 export function clearDispatchSessionCookie() {
   return cookieHeader("", 0);
 }
@@ -239,11 +244,12 @@ function sessionFromAuth(session: {
   access_token: string;
   refresh_token: string;
   expires_at?: number | null;
-}): StoredSession {
+}, embedded = false): StoredSession {
   return {
     accessToken: session.access_token,
     refreshToken: session.refresh_token,
     expiresAt: session.expires_at || null,
+    ...(embedded ? { embedded: true } : {}),
   };
 }
 
@@ -367,6 +373,102 @@ export async function createDispatchLoginSession(input: {
   }
 }
 
+export async function createDispatchGhosSession(input: {
+  tokenHash: string;
+}) {
+  const tokenHash = String(input.tokenHash || "").trim();
+  if (tokenHash.length < 20 || tokenHash.length > 1024) {
+    return data(
+      { ok: false, message: "GHOS supplied an invalid Dispatch V2 session." },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const authClient = createAuthClient();
+    const { data: verification, error } = await withAuthTimeout(
+      authClient.auth.verifyOtp({
+        token_hash: tokenHash,
+        type: "email",
+      }),
+      "Dispatch V2 GHOS session verification",
+    );
+
+    if (error || !verification.session || !verification.user) {
+      return data(
+        { ok: false, message: error?.message || "Unable to start the GHOS session." },
+        { status: 401 },
+      );
+    }
+
+    const role = await ensureRoleForUser(verification.user);
+    if (!role.isActive) {
+      return data(
+        { ok: false, message: "This dispatch user is disabled." },
+        { status: 403 },
+      );
+    }
+
+    const session = sessionFromAuth(verification.session, true);
+    setCachedSessionUser(session, verification.user);
+    return data(
+      { ok: true },
+      {
+        headers: {
+          "Set-Cookie": embeddedCookieHeader(encodeSession(session)),
+        },
+      },
+    );
+  } catch (error) {
+    return data(
+      { ok: false, message: friendlyAuthError(error) },
+      { status: 500 },
+    );
+  }
+}
+
+export async function createDispatchGhosLink(input: {
+  email: string;
+  displayName: string;
+  ghosUserId: string;
+  role: string;
+  permissions: string[];
+}) {
+  const email = input.email.trim().toLowerCase();
+  if (!email || !email.includes("@")) {
+    throw new Error("GHOS supplied an invalid Dispatch V2 email address.");
+  }
+  if (!["admin", "dispatcher", "viewer"].includes(input.role)) {
+    throw new Error("GHOS supplied an invalid Dispatch V2 role.");
+  }
+
+  const supabaseAdmin = getAdminClient();
+  const { data: linkData, error } = await supabaseAdmin.auth.admin.generateLink({
+    type: "magiclink",
+    email,
+    options: {
+      data: {
+        display_name: input.displayName || email,
+        ghos_user_id: input.ghosUserId,
+      },
+    },
+  });
+  if (error || !linkData.user || !linkData.properties?.hashed_token) {
+    throw new Error(error?.message || "Supabase did not return a Dispatch V2 session link.");
+  }
+
+  await saveDispatchUserRole({
+    userId: linkData.user.id,
+    email,
+    displayName: input.displayName || email,
+    role: input.role,
+    permissions: input.permissions,
+    isActive: true,
+  });
+
+  return linkData.properties.hashed_token;
+}
+
 export async function getDispatchAuthSetupStatus() {
   const status = {
     ok: false,
@@ -428,7 +530,10 @@ async function getUserFromStoredSession(request: Request): Promise<{
   );
   if (refreshError || !refreshed.session || !refreshed.user) return null;
 
-  const refreshedSession = sessionFromAuth(refreshed.session);
+  const refreshedSession = sessionFromAuth(
+    refreshed.session,
+    stored.embedded === true,
+  );
   setCachedSessionUser(refreshedSession, refreshed.user);
 
   return {
@@ -462,9 +567,12 @@ export async function requireDispatchUser(
   }
 
   if (current.refreshedSession) {
+    const setCookie = current.refreshedSession.embedded
+      ? embeddedCookieHeader(encodeSession(current.refreshedSession))
+      : cookieHeader(encodeSession(current.refreshedSession));
     throw redirect(url.pathname + url.search, {
       headers: {
-        "Set-Cookie": cookieHeader(encodeSession(current.refreshedSession)),
+        "Set-Cookie": setCookie,
       },
     });
   }

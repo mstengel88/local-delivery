@@ -11,24 +11,35 @@ import {
 import {
   assignOrder,
   calculateBoardDistances,
+  clearDispatchBoard,
   createDispatchOrder,
   createDispatchRoute,
   getDispatchTimingInsights,
   getTimingMatchForOrder,
   getMapsConfigStatus,
+  loadDispatchEmployeeOptions,
   loadDispatchOperationalSettings,
+  loadDispatchB2BCompanies,
+  loadDispatchQuoteProducts,
+  loadDispatchTrucks,
   loadBoardState,
   parseDispatchLineItemsText,
   reorderStop,
   unassignOrder,
+  updateDispatchRouteDriver,
   type DistanceCalculationResult,
   type DispatchBoardState,
+  type DispatchB2BCompany,
+  type DispatchEmployeeOption,
   type DispatchOrder,
+  type DispatchQuoteProduct,
   type DispatchTimingMatch,
+  type DispatchTruck,
 } from "../lib/dispatch.server";
 import { requireDispatchEditor, requireDispatchUser } from "../lib/auth.server";
 import { PermissionNav } from "../components/PermissionNav";
 import { useDispatchVersionRevalidator } from "../components/useDispatchVersionRevalidator";
+import { attachAddressAutocomplete, loadGooglePlaces } from "../lib/google-places";
 
 function todayDateKey() {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -36,11 +47,15 @@ function todayDateKey() {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
   }).formatToParts(new Date());
   const year = parts.find((part) => part.type === "year")?.value || "";
   const month = parts.find((part) => part.type === "month")?.value || "";
   const day = parts.find((part) => part.type === "day")?.value || "";
-  return `${year}-${month}-${day}`;
+  const hour = Number(parts.find((part) => part.type === "hour")?.value || "0");
+  const dateKey = `${year}-${month}-${day}`;
+  return hour >= 23 ? shiftDateKey(dateKey, 1) : dateKey;
 }
 
 function shiftDateKey(dateKey: string | null, offsetDays: number) {
@@ -80,10 +95,14 @@ export async function loader({ request }: { request: Request }) {
   const requestedDate = url.searchParams.get("date");
   const dateKey = requestedDate === "all" ? null : requestedDate || todayDateKey();
   const includeUndated = defaultIncludeUndatedForDate(dateKey, requestedDate, url);
-  const [state, timingInsights, operations] = await Promise.all([
+  const [state, timingInsights, operations, employees, trucks, products, companies] = await Promise.all([
     loadBoardState({ dateKey, includeUndated }),
     getDispatchTimingInsights(1000),
     loadDispatchOperationalSettings().catch(() => null),
+    loadDispatchEmployeeOptions(500),
+    loadDispatchTrucks(500),
+    loadDispatchQuoteProducts(),
+    loadDispatchB2BCompanies(),
   ]);
   const allOrders = [...state.unscheduled, ...state.routes.flatMap((route) => route.orders)];
   const routeByOrderId = new Map(
@@ -107,6 +126,10 @@ export async function loader({ request }: { request: Request }) {
     operations: {
       refreshSeconds: operations?.mapRefreshSeconds || 30,
     },
+    employees,
+    trucks,
+    products,
+    companies,
     dateKey,
     includeUndated,
     loadedAt: new Date().toISOString(),
@@ -120,7 +143,7 @@ export function shouldRevalidate({ actionResult, defaultShouldRevalidate }: any)
 }
 
 export async function action({ request }: { request: Request }) {
-  await requireDispatchUser(request, "board");
+  const currentUser = await requireDispatchUser(request, "board");
   await requireDispatchEditor(request);
   const form = await request.formData();
   const intent = String(form.get("intent") || "");
@@ -131,12 +154,17 @@ export async function action({ request }: { request: Request }) {
     const address = String(form.get("address") || "").trim();
     const city = String(form.get("city") || "").trim();
     const material = String(form.get("material") || "").trim();
+    const materialSku = String(form.get("materialSku") || "").trim();
     const quantity = String(form.get("quantity") || "").trim();
     const unit = String(form.get("unit") || "").trim();
-    const lineItems = parseDispatchLineItemsText(String(form.get("lineItemsText") || ""), {
+    const fallbackLineItem = {
       material,
       quantity,
       unit,
+      ...(materialSku ? { sku: materialSku } : {}),
+    };
+    const lineItems = parseDispatchLineItemsText(String(form.get("lineItemsText") || ""), {
+      ...fallbackLineItem,
     });
 
     if (!customer || !address || !city || !material || !quantity || !unit) {
@@ -166,7 +194,10 @@ export async function action({ request }: { request: Request }) {
 
     const createdRoute = await createDispatchRoute({
       code,
+      dispatchDate: String(form.get("dispatchDate") || todayDateKey()),
+      truckId: String(form.get("truckId") || ""),
       truck: String(form.get("truck") || ""),
+      driverId: String(form.get("driverId") || ""),
       driver: String(form.get("driver") || ""),
       helper: String(form.get("helper") || ""),
       shift: String(form.get("shift") || ""),
@@ -174,6 +205,44 @@ export async function action({ request }: { request: Request }) {
       color: String(form.get("color") || "#38bdf8"),
     });
     return data({ ok: true, message: `Created route ${createdRoute.code}.`, createdRoute });
+  }
+
+  if (intent === "update-route-driver") {
+    const routeId = String(form.get("routeId") || "").trim();
+    if (!routeId) return data({ ok: false, message: "Missing route." }, { status: 400 });
+    try {
+      const updatedRoute = await updateDispatchRouteDriver(
+        routeId,
+        String(form.get("driverId") || ""),
+        currentUser.email,
+      );
+      return data({ ok: true, message: `Driver updated for ${updatedRoute.code}.`, updatedRoute });
+    } catch (error) {
+      return data(
+        { ok: false, message: error instanceof Error ? error.message : "Unable to update route driver." },
+        { status: 500 },
+      );
+    }
+  }
+
+  if (intent === "clear-board") {
+    try {
+      const dateValue = String(form.get("date") || "");
+      const result = await clearDispatchBoard({
+        dateKey: dateValue === "all" ? null : dateValue || todayDateKey(),
+        password: String(form.get("managerPassword") || ""),
+        actor: currentUser.email,
+      });
+      return data({
+        ok: true,
+        message: `Board cleared: ${result.clearedRoutes} route card${result.clearedRoutes === 1 ? "" : "s"} cleared, ${result.returnedOrders} unfinished order${result.returnedOrders === 1 ? "" : "s"} returned to the queue.`,
+      });
+    } catch (error) {
+      return data(
+        { ok: false, message: error instanceof Error ? error.message : "Unable to clear board." },
+        { status: 400 },
+      );
+    }
   }
 
   if (intent === "calculate-distances") {
@@ -223,9 +292,12 @@ export async function action({ request }: { request: Request }) {
         verifiedQuantity,
         groupShopifyAddOns,
       );
+      const shopifyMessages = (assignment.shopifyMessages || []).filter(Boolean);
       return data({
         ok: true,
-        message: assignment.message,
+        message: shopifyMessages.length
+          ? `${assignment.message} Shopify: ${shopifyMessages.join(" ")}`
+          : assignment.message,
         updatedOrder: assignment.updatedOrder,
         createdOrders: assignment.createdOrders,
         createdCount: assignment.createdCount,
@@ -436,6 +508,11 @@ function travelLabel(order: DispatchOrder) {
   return `${time} · ${distance}`;
 }
 
+function orderMapsUrl(order: DispatchOrder) {
+  const query = [order.address, order.city].filter(Boolean).join(", ");
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
 function timingHintLabel(order: DispatchOrder, hint?: DispatchTimingMatch | null) {
   if (!hint?.correctionFactor) {
     const routeTiming = checklistObject(order, "routeTiming");
@@ -522,9 +599,43 @@ function resequenceLocalOrders(orders: DispatchOrder[]) {
   return orders.map((order, index) => ({ ...order, stopSequence: index + 1 }));
 }
 
+function normalizeManualUnitLabel(value: string) {
+  const lowerValue = value.toLowerCase();
+  if (lowerValue.includes("ton")) return "Ton";
+  if (lowerValue.includes("yard")) return "Yard";
+  if (lowerValue.includes("bag")) return "Bag";
+  if (lowerValue.includes("gallon")) return "Gallon";
+  return "Unit";
+}
+
+function productSearchValue(product: DispatchQuoteProduct) {
+  return product.sku ? `${product.title} (${product.sku})` : product.title;
+}
+
+function companyCityValue(company: DispatchB2BCompany) {
+  const city = company.billingCity.trim();
+  const stateZip = [company.billingProvince, company.billingPostalCode].filter(Boolean).join(" ");
+  return [city, stateZip].filter(Boolean).join(", ");
+}
+
+function setManualInputValue(id: string, value: string, onlyIfEmpty = true) {
+  if (!value || typeof document === "undefined") return;
+  const input = document.getElementById(id) as HTMLInputElement | null;
+  if (!input) return;
+  if (onlyIfEmpty && input.value.trim()) return;
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 export default function Board() {
   const loaderData = useLoaderData<typeof loader>() as DispatchBoardState & {
-    mapsConfig: { configured: boolean; shopAddress: string };
+    mapsConfig: {
+      configured: boolean;
+      browserConfigured: boolean;
+      browserApiKey: string;
+      shopAddress: string;
+    };
     timingInsights: {
       sampleCount: number;
       latestSampleAt: string | null;
@@ -538,6 +649,10 @@ export default function Board() {
     operations: {
       refreshSeconds: number;
     };
+    employees: DispatchEmployeeOption[];
+    trucks: DispatchTruck[];
+    products: DispatchQuoteProduct[];
+    companies: DispatchB2BCompany[];
     loadedAt: string;
     loadMs: number;
   };
@@ -556,6 +671,10 @@ export default function Board() {
   } | undefined;
   const fetcherDistanceResult = fetcherData?.result;
   const visibleDistanceResult = distanceResult || fetcherDistanceResult;
+  const employees = loaderData.employees || [];
+  const trucks = loaderData.trucks || [];
+  const products = loaderData.products || [];
+  const companies = loaderData.companies || [];
   const revalidator = useRevalidator();
   useDispatchVersionRevalidator(revalidator, { intervalMs: 6000 });
   const [boardState, setBoardState] = useState<DispatchBoardState>(() => ({
@@ -566,9 +685,80 @@ export default function Board() {
   const [search, setSearch] = useState("");
   const [queueFilter, setQueueFilter] = useState("");
   const [queueSort, setQueueSort] = useState("date");
+  const [showAddRoute, setShowAddRoute] = useState(false);
+  const [showManualOrder, setShowManualOrder] = useState(false);
+  const [manualCustomer, setManualCustomer] = useState("");
+  const [manualContact, setManualContact] = useState("");
+  const [manualMaterial, setManualMaterial] = useState("");
+  const [manualMaterialSku, setManualMaterialSku] = useState("");
+  const [manualUnit, setManualUnit] = useState("Yard");
   const [draggedOrderId, setDraggedOrderId] = useState("");
   const [selectedDetailOrderId, setSelectedDetailOrderId] = useState("");
   const normalizedSearch = search.trim().toLowerCase();
+  const companyLookup = useMemo(() => {
+    const lookup = new Map<string, DispatchB2BCompany>();
+    companies.forEach((company) => {
+      [company.companyName, company.contactName, company.email, company.phone]
+        .filter(Boolean)
+        .forEach((value) => lookup.set(String(value).trim().toLowerCase(), company));
+    });
+    return lookup;
+  }, [companies]);
+  const productLookup = useMemo(() => {
+    const lookup = new Map<string, DispatchQuoteProduct>();
+    products.forEach((product) => {
+      [product.title, product.sku, productSearchValue(product), `${product.sku} - ${product.title}`]
+        .filter(Boolean)
+        .forEach((value) => lookup.set(String(value).trim().toLowerCase(), product));
+    });
+    return lookup;
+  }, [products]);
+
+  function selectManualCompany(value: string) {
+    setManualCustomer(value);
+    const company = companyLookup.get(value.trim().toLowerCase());
+    if (!company) return;
+
+    setManualCustomer(company.companyName);
+    setManualContact([company.email, company.phone].filter(Boolean).join(" / "));
+    setManualInputValue("manual-order-address", [company.billingAddress1, company.billingAddress2].filter(Boolean).join(" "), true);
+    setManualInputValue("manual-order-city", companyCityValue(company), true);
+    setManualInputValue("manual-order-province", company.billingProvince, false);
+    setManualInputValue("manual-order-postal-code", company.billingPostalCode, false);
+    setManualInputValue("manual-order-country", company.billingCountry || "US", false);
+  }
+
+  function selectManualProduct(value: string) {
+    setManualMaterial(value);
+    const product = productLookup.get(value.trim().toLowerCase());
+    if (!product) {
+      setManualMaterialSku("");
+      return;
+    }
+
+    setManualMaterial(product.title);
+    setManualMaterialSku(product.sku);
+    setManualUnit(normalizeManualUnitLabel(product.unitLabel));
+  }
+
+  useEffect(() => {
+    if (!showManualOrder || !loaderData.mapsConfig.browserApiKey) return;
+
+    loadGooglePlaces(loaderData.mapsConfig.browserApiKey)
+      .then(() => {
+        attachAddressAutocomplete({
+          address1Id: "manual-order-address",
+          cityId: "manual-order-city",
+          provinceId: "manual-order-province",
+          postalCodeId: "manual-order-postal-code",
+          countryId: "manual-order-country",
+          cityFormat: "cityStateZip",
+        });
+      })
+      .catch((error) => {
+        console.error("[BOARD MANUAL ORDER GOOGLE PLACES ERROR]", error);
+      });
+  }, [loaderData.mapsConfig.browserApiKey, showManualOrder]);
   const normalizedQueueFilter = queueFilter.trim().toLowerCase();
   const isRefreshing = revalidator.state !== "idle";
   const isMutating = fetcher.state !== "idle";
@@ -757,6 +947,63 @@ export default function Board() {
       applyOptimisticMutation(payload);
     }
     fetcher.submit(payload, { method: "post" });
+  }
+
+  function submitClearBoard() {
+    const label = loaderData.dateKey || "all active days";
+    const confirmed = window.confirm(
+      `Clear the board for ${label}?\n\nThis will remove route cards and return unfinished orders to the unscheduled queue. Delivered and cancelled orders will not be changed.`,
+    );
+    if (!confirmed) return;
+
+    const managerPassword = window.prompt("Manager override password required to clear the board:");
+    if (managerPassword === null) return;
+    if (!managerPassword.trim()) {
+      window.alert("Manager override password is required.");
+      return;
+    }
+
+    setBoardState((current) => {
+      const routeIds = new Set(current.routes.map((route) => route.id));
+      const returnedOrders = current.routes.flatMap((route) =>
+        route.orders.map((order) => ({
+          ...order,
+          assignedRouteId: null,
+          stopSequence: null,
+          status: "new" as const,
+          deliveryStatus: "not_started" as const,
+          eta: null,
+          departedAt: null,
+        })),
+      );
+      return {
+        ...current,
+        orders: current.orders.map((order) =>
+          routeIds.has(order.assignedRouteId || "")
+            ? {
+                ...order,
+                assignedRouteId: null,
+                stopSequence: null,
+                status: "new" as const,
+                deliveryStatus: "not_started" as const,
+                eta: null,
+                departedAt: null,
+              }
+            : order,
+        ),
+        routes: [],
+        unscheduled: [...returnedOrders, ...current.unscheduled],
+      };
+    });
+
+    fetcher.submit(
+      {
+        intent: "clear-board",
+        date: loaderData.dateKey || "all",
+        managerPassword,
+      },
+      { method: "post" },
+    );
   }
 
   function getAssignmentCapacityPayload(order: DispatchOrder, routeId: string) {
@@ -1025,11 +1272,250 @@ export default function Board() {
         <Link to={todayHref}>Today</Link>
         <Link to={nextDateHref}>Next day</Link>
         <Link to={allActiveHref}>All active</Link>
+        <button
+          className="toolbarButton routeAddToggle"
+          type="button"
+          onClick={() => {
+            setShowManualOrder(false);
+            setShowAddRoute(true);
+          }}
+        >
+          Add Route
+        </button>
+        <button
+          className="toolbarButton manualAddToggle"
+          type="button"
+          onClick={() => {
+            setShowAddRoute(false);
+            setShowManualOrder(true);
+          }}
+        >
+          Manual Order
+        </button>
+        <button
+          className="toolbarButton clearBoardToggle"
+          type="button"
+          onClick={submitClearBoard}
+          disabled={isMutating || !boardState.routes.length}
+        >
+          Clear Board
+        </button>
         <span>
           Current view: <strong>{loaderData.dateKey || "All active days"}</strong>
           {loaderData.includeUndated && loaderData.dateKey ? " + undated" : ""}
         </span>
       </section>
+
+      {showAddRoute ? (
+        <div className="modalBackdrop" role="presentation" onClick={() => setShowAddRoute(false)}>
+          <Form
+            method="post"
+            className="panel addRoutePanel boardFormModal"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={() => setShowAddRoute(false)}
+          >
+            <input type="hidden" name="intent" value="create-route" />
+            <input type="hidden" name="dispatchDate" value={loaderData.dateKey || todayDateKey()} />
+            <div className="modalFormHeader">
+              <div className="addRouteHeading">
+                <p className="eyebrow">New Dispatch Route</p>
+                <strong>{loaderData.dateKey || "All active days"}</strong>
+              </div>
+              <button className="modalCloseButton" type="button" onClick={() => setShowAddRoute(false)}>
+                Close
+              </button>
+            </div>
+            <label>
+              Route code
+              <input name="code" placeholder="R-310" required />
+            </label>
+            <label>
+              Truck
+              <select name="truckId" defaultValue="">
+                <option value="">Choose truck</option>
+                {trucks.map((truck) => (
+                  <option key={truck.id} value={truck.id}>
+                    {truck.truckNumber}
+                    {truck.name ? ` - ${truck.name}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Driver
+              <select name="driverId" defaultValue="">
+                <option value="">No driver</option>
+                {employees.map((employee) => (
+                  <option key={employee.id} value={employee.id}>
+                    {employee.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Shift
+              <input name="shift" placeholder="6:00a - 2:30p" />
+            </label>
+            <label>
+              Region
+              <input name="region" placeholder="North / Germantown" />
+            </label>
+            <label>
+              Color
+              <input name="color" type="color" defaultValue="#38bdf8" />
+            </label>
+            <button className="primaryButton" type="submit">Create Route Card</button>
+          </Form>
+        </div>
+      ) : null}
+
+      {showManualOrder ? (
+        <div className="modalBackdrop" role="presentation" onClick={() => setShowManualOrder(false)}>
+          <Form
+            method="post"
+            className="panel addManualOrderPanel boardFormModal"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={() => setShowManualOrder(false)}
+          >
+            <input type="hidden" name="intent" value="create-order" />
+            <input id="manual-order-province" name="province" type="hidden" />
+            <input id="manual-order-postal-code" name="postalCode" type="hidden" />
+            <input id="manual-order-country" name="country" type="hidden" defaultValue="US" />
+            <input name="materialSku" type="hidden" value={manualMaterialSku} />
+            <datalist id="manual-order-customers">
+              {companies.map((company) => (
+                <option key={company.id || company.companyName} value={company.companyName}>
+                  {[company.contactName, company.email, company.phone].filter(Boolean).join(" | ")}
+                </option>
+              ))}
+            </datalist>
+            <datalist id="manual-order-products">
+              {products.map((product) => (
+                <option key={product.sku || productSearchValue(product)} value={productSearchValue(product)}>
+                  {[product.vendor, product.unitLabel].filter(Boolean).join(" | ")}
+                </option>
+              ))}
+            </datalist>
+            <div className="modalFormHeader">
+              <div className="manualOrderHeading">
+                <p className="eyebrow">Manual Intake</p>
+                <strong>Create dispatch order</strong>
+                {!loaderData.mapsConfig.browserConfigured ? (
+                  <small className="muted">Address lookup needs GOOGLE_MAPS_BROWSER_API_KEY.</small>
+                ) : null}
+              </div>
+              <button className="modalCloseButton" type="button" onClick={() => setShowManualOrder(false)}>
+                Close
+              </button>
+            </div>
+            <label>
+              Order number
+              <input name="orderNumber" placeholder="Example: 201-10432 or leave blank" />
+            </label>
+            <label>
+              Customer
+              <input
+                name="customer"
+                list="manual-order-customers"
+                placeholder="Search customer or company, example: Green Hills Supply"
+                value={manualCustomer}
+                onChange={(event) => selectManualCompany(event.currentTarget.value)}
+                required
+              />
+            </label>
+            <label>
+              Contact
+              <input
+                name="contact"
+                placeholder="Example: 414-555-1212 or jane@email.com"
+                value={manualContact}
+                onChange={(event) => setManualContact(event.currentTarget.value)}
+              />
+            </label>
+            <label>
+              Jobsite address
+              <input
+                id="manual-order-address"
+                name="address"
+                placeholder="Example: W185N7487 Narrow Lane"
+                required
+                autoComplete="street-address"
+              />
+            </label>
+            <label>
+              City, state, ZIP
+              <input
+                id="manual-order-city"
+                name="city"
+                placeholder="Example: Menomonee Falls, WI 53051"
+                required
+                autoComplete="address-level2"
+              />
+            </label>
+            <label>
+              Requested date
+              <input name="requestedWindow" type="date" defaultValue={loaderData.dateKey || ""} />
+            </label>
+            <label>
+              Material
+              <input
+                name="material"
+                list="manual-order-products"
+                placeholder="Search product name or SKU, example: Deep Brown Mulch"
+                value={manualMaterial}
+                onChange={(event) => selectManualProduct(event.currentTarget.value)}
+                required
+              />
+            </label>
+            <label>
+              Quantity
+              <input name="quantity" inputMode="decimal" placeholder="Example: 10" required />
+            </label>
+            <label>
+              Unit
+              <select
+                name="unit"
+                value={manualUnit}
+                onChange={(event) => setManualUnit(event.currentTarget.value)}
+                required
+              >
+                <option>Yard</option>
+                <option>Ton</option>
+                <option>Bag</option>
+                <option>Gallon</option>
+                <option>Unit</option>
+              </select>
+            </label>
+            <label>
+              Time preference
+              <select name="timePreference" defaultValue="Anytime">
+                <option>Anytime</option>
+                <option>Morning</option>
+                <option>Afternoon</option>
+                <option>Evening</option>
+              </select>
+            </label>
+            <label className="wideField">
+              Multiple items on this stop
+              <textarea
+                name="lineItemsText"
+                rows={3}
+                placeholder={"Example:\n4 Bag Grass Seed\n2 Bag Fertilizer"}
+              />
+              <small className="muted">Optional. One item per line, all routed as one stop.</small>
+            </label>
+            <label className="wideField">
+              Notes
+              <textarea
+                name="notes"
+                placeholder="Example: Drop at end of driveway, call before dumping."
+                rows={3}
+              />
+            </label>
+            <button className="successButton" type="submit">Add Manual Order</button>
+          </Form>
+        </div>
+      ) : null}
 
       <section className="boardStats">
         <article className="panel statTile compactStat">
@@ -1165,6 +1651,13 @@ export default function Board() {
                   <small className="timingChip stale">Timing changed since calculated</small>
                 ) : null}
                 <div className="assignRow">
+                  <button
+                    type="button"
+                    className="queueDetailsButton"
+                    onClick={() => setSelectedDetailOrderId(order.id)}
+                  >
+                    Details
+                  </button>
                   <select
                     defaultValue=""
                     onChange={(event) => {
@@ -1210,6 +1703,31 @@ export default function Board() {
                 <span className="count">{route.orders.length}</span>
               </div>
 
+              <fetcher.Form method="post" className="routeDriverPicker">
+                <input type="hidden" name="intent" value="update-route-driver" />
+                <input type="hidden" name="routeId" value={route.id} />
+                <label>
+                  Change driver
+                  <select
+                    name="driverId"
+                    defaultValue={route.driverId || ""}
+                    onChange={(event) => {
+                      if (event.currentTarget.form) {
+                        fetcher.submit(event.currentTarget.form, { method: "post" });
+                      }
+                    }}
+                    disabled={isMutating}
+                  >
+                    <option value="">No driver</option>
+                    {employees.map((employee) => (
+                      <option key={employee.id} value={employee.id}>
+                        {employee.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </fetcher.Form>
+
               {route.deliveredOrders.length ? (
                 <div className="deliveredRouteStrip" aria-label={`Delivered stops for ${route.code}`}>
                   {route.deliveredOrders.slice(0, 8).map((order) => (
@@ -1237,6 +1755,11 @@ export default function Board() {
                       <small className="materialLine" title={order.loadLabel || order.material}>
                         {order.loadLabel || order.material}
                       </small>
+                      {order.proofNotes ? (
+                        <small className="routeOrderNotes" title={order.proofNotes}>
+                          <strong>Notes:</strong> {order.proofNotes}
+                        </small>
+                      ) : null}
                       <div className="stopMetaChips">
                         <small className="timePreferenceChip">
                           Time: {order.timePreference || "Anytime"}
@@ -1303,122 +1826,6 @@ export default function Board() {
         </section>
       </section>
 
-      <section className="creationGrid compactCreation">
-        <Form method="post" className="panel createCard">
-          <input type="hidden" name="intent" value="create-route" />
-          <div className="panelHeader">
-            <div>
-              <p className="eyebrow">New Route</p>
-              <h2>Create route</h2>
-            </div>
-          </div>
-          <div className="createFields routeCreateFields">
-            <label>
-              Code
-              <input name="code" placeholder="R-310" required />
-            </label>
-            <label>
-              Truck
-              <input name="truck" placeholder="310" />
-            </label>
-            <label>
-              Driver
-              <input name="driver" placeholder="Driver name" />
-            </label>
-            <label>
-              Shift
-              <input name="shift" placeholder="6:00a - 2:30p" />
-            </label>
-            <label>
-              Region
-              <input name="region" placeholder="North / Germantown" />
-            </label>
-            <label>
-              Color
-              <input name="color" type="color" defaultValue="#38bdf8" />
-            </label>
-          </div>
-          <button className="primaryButton" type="submit">Add Route</button>
-        </Form>
-
-        <Form method="post" className="panel createCard">
-          <input type="hidden" name="intent" value="create-order" />
-          <div className="panelHeader">
-            <div>
-              <p className="eyebrow">Manual Intake</p>
-              <h2>Create order</h2>
-            </div>
-          </div>
-          <div className="createFields orderCreateFields">
-            <label>
-              Order number
-              <input name="orderNumber" placeholder="Optional" />
-            </label>
-            <label>
-              Customer
-              <input name="customer" placeholder="Customer name" required />
-            </label>
-            <label>
-              Contact
-              <input name="contact" placeholder="Phone or email" />
-            </label>
-            <label>
-              Address
-              <input name="address" placeholder="Street address" required />
-            </label>
-            <label>
-              City
-              <input name="city" placeholder="City, ST ZIP" required />
-            </label>
-            <label>
-              Requested
-              <input name="requestedWindow" type="date" defaultValue={loaderData.dateKey || ""} />
-            </label>
-            <label>
-              Material
-              <input name="material" placeholder="Material" required />
-            </label>
-            <label>
-              Quantity
-              <input name="quantity" inputMode="decimal" placeholder="10" required />
-            </label>
-            <label>
-              Unit
-              <select name="unit" defaultValue="Yard" required>
-                <option>Yard</option>
-                <option>Ton</option>
-                <option>Bag</option>
-                <option>Gallon</option>
-                <option>Unit</option>
-              </select>
-            </label>
-            <label className="wideField">
-              Multiple items on this stop
-              <textarea
-                name="lineItemsText"
-                rows={3}
-                placeholder={"4 Bag Grass Seed\n2 Bag Fertilizer"}
-              />
-              <small className="muted">Optional. One item per line, all routed as one stop.</small>
-            </label>
-            <label>
-              Time
-              <select name="timePreference" defaultValue="Anytime">
-                <option>Anytime</option>
-                <option>Morning</option>
-                <option>Afternoon</option>
-                <option>Evening</option>
-              </select>
-            </label>
-            <label className="wideField">
-              Notes
-              <textarea name="notes" placeholder="Order notes, delivery instructions, or Shopify-style order note" rows={3} />
-            </label>
-          </div>
-          <button className="successButton" type="submit">Add Order</button>
-        </Form>
-      </section>
-
       {selectedDetail ? (
         <div
           className="modalBackdrop"
@@ -1461,7 +1868,19 @@ export default function Board() {
                 <strong>{selectedDetail.order.contact || "Not entered"}</strong>
               </div>
               <div className="wideField">
-                <span>Address</span>
+                <div className="detailFieldHeader">
+                  <span>Address</span>
+                  {selectedDetail.order.address ? (
+                    <a
+                      href={orderMapsUrl(selectedDetail.order)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="detailsMapButton"
+                    >
+                      Open in Maps
+                    </a>
+                  ) : null}
+                </div>
                 <strong>{selectedDetail.order.address || "No address"}</strong>
                 <small>{selectedDetail.order.city || "No city"}</small>
               </div>

@@ -2,7 +2,7 @@ import { data, Form, Link, useLoaderData, useNavigation } from "react-router";
 import { PermissionNav } from "../components/PermissionNav";
 import { requireDispatchUser } from "../lib/auth.server";
 import {
-  loadDispatchPlanningOrders,
+  loadDispatchCalendarOrders,
 } from "../lib/dispatch.server";
 import type { DispatchOrder } from "../lib/dispatch.server";
 
@@ -146,7 +146,10 @@ export async function loader({ request }: { request: Request }) {
   const safeView: CalendarView = ["day", "week", "month", "list"].includes(view) ? view : "month";
   const dateKey = url.searchParams.get("date") || todayDateKey();
   const q = (url.searchParams.get("q") || "").trim();
-  const orders = (await loadDispatchPlanningOrders(1500)).filter((order) => {
+  const queryDays = safeView === "list" ? viewDays("week", dateKey) : viewDays(safeView, dateKey);
+  const rangeStart = queryDays[0] || dateKey;
+  const rangeEnd = queryDays[queryDays.length - 1] || dateKey;
+  const orders = (await loadDispatchCalendarOrders(rangeStart, rangeEnd, 2500)).filter((order) => {
     if (order.status === "cancelled") return false;
     return q ? searchText(order).includes(q.toLowerCase()) : true;
   });

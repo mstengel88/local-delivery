@@ -103,9 +103,24 @@ export default function ImportsPage() {
 
       <section className={config.configured ? "notice" : "notice error"}>
         {config.configured
-          ? `Connected config found for ${config.shopDomain} using Admin API ${config.apiVersion} (${config.authMode}).`
+          ? [
+              `Connected config found for ${config.shopDomain} using Admin API ${config.apiVersion} (${config.authMode}).`,
+              `Expected app: ${config.expectedApp || "Local-Delivery"}.`,
+              config.configuredClientIdEnding
+                ? `Client ID ending: ${config.configuredClientIdEnding}.`
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" ")
           : "Shopify import is not configured yet. Add SHOPIFY_SHOP_DOMAIN plus either SHOPIFY_ADMIN_ACCESS_TOKEN or SHOPIFY_API_KEY and SHOPIFY_API_SECRET to .env."}
       </section>
+
+      {config.usingRemovedContractorApp ? (
+        <section className="notice error">
+          This container is still using the removed Local-Delivery-Contractor Shopify app. Update SHOPIFY_API_KEY
+          and SHOPIFY_API_SECRET to the staying Local-Delivery app, then rebuild/restart the container.
+        </section>
+      ) : null}
 
       <section className="panel importPanel">
         <div className="panelHeader">
